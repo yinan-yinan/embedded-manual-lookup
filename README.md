@@ -1,102 +1,105 @@
 # Embedded Lookup
 
-A lightweight local manual lookup tool for embedded development.
+[English](./README.en.md)
 
-It answers questions from local datasheets, reference manuals, and other technical text/PDF files with citation-ready evidence, without loading the whole manual into context.
+一个面向嵌入式开发的轻量级本地手册检索工具。
 
-## Included files
+它可以从本地数据手册、参考手册以及其他技术文本 / PDF 文件中提取证据，并给出带引用的回答，而不需要把整本手册都塞进上下文里。
 
-This repository keeps the upload scope minimal:
+## 仓库包含内容
+
+这个仓库保持最小上传范围，只包含：
 
 - `README.md`
+- `README.en.md`
 - `scripts/embedded_lookup.py`
 - `.claude-plugin/plugin.json`
 - `skills/embedded-lookup/SKILL.md`
 
-## What it does
+## 功能
 
-- searches local files or folders
-- supports text files and text-based PDFs
-- supports optional filters for device, document type, and revision
-- returns grounded short answers with evidence
-- supports JSON output for scripting
+- 支持搜索本地文件或文件夹
+- 支持文本文件和文本型 PDF
+- 支持按器件、文档类型、版本进行可选过滤
+- 返回基于证据的简短答案
+- 支持 `--json` 输出，便于脚本集成
 
-## Installation
+## 安装
 
-### Requirements
+### 环境要求
 
 - Python 3.10+
-- Optional: `pypdf` for PDF parsing
+- 可选依赖：`pypdf`（用于解析 PDF）
 
-### Install optional PDF dependency
+### 安装可选 PDF 依赖
 
-If you need PDF support:
+如果需要支持 PDF：
 
 ```bash
 python -m pip install pypdf
 ```
 
-On some Windows environments, you can also use:
+在部分 Windows 环境中，也可以使用：
 
 ```bash
 py -m pip install pypdf
 ```
 
-If you only query `.txt`, `.md`, or `.rst` manuals, no extra package is required.
+如果你只查询 `.txt`、`.md` 或 `.rst` 手册，则不需要额外依赖。
 
-## Verify installation
+## 验证安装
 
 ```bash
 python ./scripts/embedded_lookup.py --help
 ```
 
-If help text prints successfully, the CLI is ready.
+如果能够正常输出帮助信息，说明 CLI 已可使用。
 
-## CLI usage
+## CLI 用法
 
-### Basic usage
-
-```bash
-python ./scripts/embedded_lookup.py <source-or-question> [question] [--device <device>] [--document-type <type>] [--revision <rev>] [--json]
-```
-
-### Query a specific manual
+### 基本用法
 
 ```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "What is the VDD operating voltage range?"
+python ./scripts/embedded_lookup.py <手册路径或问题> [问题] [--device <器件>] [--document-type <类型>] [--revision <版本>] [--json]
 ```
 
-### Query with filters
+### 查询指定手册
 
 ```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which register enables SPI DMA?" --device STM32F103x8B --document-type "reference manual"
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "这个芯片的 VDD 工作电压范围是多少？"
 ```
 
-### Get JSON output
+### 带过滤条件查询
 
 ```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "What I2C pins are used on this board?" --json
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "哪个寄存器位用来使能 SPI DMA？" --device STM32F103x8B --document-type "reference manual"
 ```
 
-### Use default manual folders
-
-If only one positional argument is passed, it is treated as the question and the tool will try default local source folders.
+### 输出 JSON 结果
 
 ```bash
-python ./scripts/embedded_lookup.py "Which register enables SPI DMA?"
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "这块板子上的 I2C 引脚有哪些？" --json
 ```
 
-## Skill packaging
+### 使用默认手册目录
 
-This repository also includes a minimal Claude skill/plugin structure:
+如果只传一个位置参数，它会被当作问题，工具会尝试默认本地手册目录。
+
+```bash
+python ./scripts/embedded_lookup.py "哪个寄存器位用来使能 SPI DMA？"
+```
+
+## Skill 包装结构
+
+仓库中也包含最小 Claude skill / plugin 结构：
 
 - `.claude-plugin/plugin.json`
 - `skills/embedded-lookup/SKILL.md`
 
-The implementation stays in `scripts/embedded_lookup.py`, while `SKILL.md` acts as a thin wrapper.
+真正的实现位于 `scripts/embedded_lookup.py`，而 `SKILL.md` 只是一个薄包装层。
 
-## Notes
+## 说明
 
-- Supported inputs are local text files and text-based PDFs.
-- This tool is for manual lookup only.
-- OCR-heavy PDFs, schematics, netlists, and remote crawling are out of scope.
+- 支持的输入是本地文本文件和文本型 PDF。
+- 这个工具只用于手册检索。
+- OCR 很重的 PDF、原理图、网表和远程抓取不在当前范围内。
