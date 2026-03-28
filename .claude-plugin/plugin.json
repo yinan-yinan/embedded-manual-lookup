@@ -1,3 +1,4 @@
 {
-  "name": "embedded-lookup"
+  "name": "embedded-manual-lookup",
+  "skills": ["SKILL.md"]
 }

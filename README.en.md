@@ -2,36 +2,35 @@
 
 [中文说明](./README.md)
 
-A lightweight local manual lookup tool for embedded development.
+A lightweight local manual lookup skill for embedded development, designed for Claude Code style skill installation and local grounded manual retrieval.
 
-It answers questions from local datasheets, reference manuals, and other technical text/PDF files with citation-ready evidence, without loading the whole manual into context.
+## Features
 
-## Included files
-
-This repository keeps the upload scope minimal:
-
-- `README.md`
-- `README.en.md`
-- `scripts/embedded_lookup.py`
-- `.claude-plugin/plugin.json`
-- `skills/embedded-lookup/SKILL.md`
-
-## What it does
-
-- searches local files or folders
-- supports text files and text-based PDFs
-- supports optional filters for device, document type, and revision
-- returns grounded short answers with evidence
-- supports JSON output for scripting
+- search local files or folders
+- support text files and text-based PDFs
+- support optional filters for device, document type, and revision
+- return grounded short answers with evidence
+- support `--json` output for scripting
+- preserve direct standalone Python CLI usage
 
 ## Installation
 
-### Requirements
+### Install the skill
+
+```bash
+npx skills add yinan-yinan/embedded-manual-lookup
+```
+
+If you want to target only this skill explicitly:
+
+```bash
+npx skills add yinan-yinan/embedded-manual-lookup --skill embedded-lookup
+```
+
+### Runtime requirements
 
 - Python 3.10+
 - Optional: `pypdf` for PDF parsing
-
-### Install optional PDF dependency
 
 If you need PDF support:
 
@@ -47,56 +46,61 @@ py -m pip install pypdf
 
 If you only query `.txt`, `.md`, or `.rst` manuals, no extra package is required.
 
-## Verify installation
+## Usage
+
+After installation, you can ask Claude things like:
+
+- "Look up the VDD operating voltage range in this PDF"
+- "Which register bit enables SPI DMA?"
+- "What I2C pins are used on this board?"
+
+Direct CLI usage is still supported:
 
 ```bash
 python ./scripts/embedded_lookup.py --help
 ```
 
-If help text prints successfully, the CLI is ready.
-
-## CLI usage
-
-### Basic usage
+Basic usage:
 
 ```bash
 python ./scripts/embedded_lookup.py <source-or-question> [question] [--device <device>] [--document-type <type>] [--revision <rev>] [--json]
 ```
 
-### Query a specific manual
+Examples:
 
 ```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "What is the VDD operating voltage range?"
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which register enables SPI DMA?"
 ```
-
-### Query with filters
-
-```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which register enables SPI DMA?" --device STM32F103x8B --document-type "reference manual"
-```
-
-### Get JSON output
 
 ```bash
 python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "What I2C pins are used on this board?" --json
 ```
 
-### Use default manual folders
+## Workflow
 
-If only one positional argument is passed, it is treated as the question and the tool will try default local source folders.
+1. Identify candidate local manuals or folders
+2. Retrieve only the most relevant sections and chunks
+3. Answer with grounded evidence
+4. Surface ambiguity, conflict, or missing evidence clearly
 
-```bash
-python ./scripts/embedded_lookup.py "Which register enables SPI DMA?"
+## File structure
+
+```text
+embedded-manual-lookup/
+├── SKILL.md
+├── README.md
+├── README.en.md
+├── references/
+│   └── usage.md
+└── scripts/
+    └── embedded_lookup.py
 ```
 
-## Skill packaging
+## Compatibility
 
-This repository also includes a minimal Claude skill/plugin structure:
-
-- `.claude-plugin/plugin.json`
-- `skills/embedded-lookup/SKILL.md`
-
-The implementation stays in `scripts/embedded_lookup.py`, while `SKILL.md` acts as a thin wrapper.
+- fits `npx skills add` style installation flows
+- keeps direct local Python CLI usage
+- currently scoped to local text and text-based PDF manual retrieval
 
 ## Notes
 

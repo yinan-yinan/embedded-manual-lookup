@@ -2,36 +2,35 @@
 
 [English](./README.en.md)
 
-一个面向嵌入式开发的轻量级本地手册检索工具。
+一个面向嵌入式开发的轻量级本地手册检索技能，适合在 Claude Code 中按需检索本地数据手册、参考手册和其他技术文档喵～
 
-它可以从本地数据手册、参考手册以及其他技术文本 / PDF 文件中提取证据，并给出带引用的回答，而不需要把整本手册都塞进上下文里。
+## 功能特点
 
-## 仓库包含内容
-
-这个仓库保持最小上传范围，只包含：
-
-- `README.md`
-- `README.en.md`
-- `scripts/embedded_lookup.py`
-- `.claude-plugin/plugin.json`
-- `skills/embedded-lookup/SKILL.md`
-
-## 功能
-
-- 支持搜索本地文件或文件夹
+- 支持本地文件或文件夹检索
 - 支持文本文件和文本型 PDF
 - 支持按器件、文档类型、版本进行可选过滤
 - 返回基于证据的简短答案
 - 支持 `--json` 输出，便于脚本集成
+- 保留独立 Python CLI 用法，不依赖远程服务
 
 ## 安装
 
-### 环境要求
+### 技能安装
+
+```bash
+npx skills add yinan-yinan/embedded-manual-lookup
+```
+
+如果只想安装这个技能，也可以显式指定：
+
+```bash
+npx skills add yinan-yinan/embedded-manual-lookup --skill embedded-lookup
+```
+
+### 运行依赖
 
 - Python 3.10+
 - 可选依赖：`pypdf`（用于解析 PDF）
-
-### 安装可选 PDF 依赖
 
 如果需要支持 PDF：
 
@@ -47,56 +46,61 @@ py -m pip install pypdf
 
 如果你只查询 `.txt`、`.md` 或 `.rst` 手册，则不需要额外依赖。
 
-## 验证安装
+## 使用方式
+
+安装后，可以直接让 Claude 帮你查本地手册，例如：
+
+- “查一下这个 PDF 里的 VDD 工作电压范围”
+- “哪个寄存器位用来使能 SPI DMA？”
+- “看看这块板子的 I2C 引脚有哪些”
+
+如果你想独立运行 CLI，也可以直接使用：
 
 ```bash
 python ./scripts/embedded_lookup.py --help
 ```
 
-如果能够正常输出帮助信息，说明 CLI 已可使用。
-
-## CLI 用法
-
-### 基本用法
+基础用法：
 
 ```bash
 python ./scripts/embedded_lookup.py <手册路径或问题> [问题] [--device <器件>] [--document-type <类型>] [--revision <版本>] [--json]
 ```
 
-### 查询指定手册
+示例：
 
 ```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "这个芯片的 VDD 工作电压范围是多少？"
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "哪个寄存器位用来使能 SPI DMA？"
 ```
-
-### 带过滤条件查询
-
-```bash
-python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "哪个寄存器位用来使能 SPI DMA？" --device STM32F103x8B --document-type "reference manual"
-```
-
-### 输出 JSON 结果
 
 ```bash
 python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "这块板子上的 I2C 引脚有哪些？" --json
 ```
 
-### 使用默认手册目录
+## 工作流程
 
-如果只传一个位置参数，它会被当作问题，工具会尝试默认本地手册目录。
+1. 从本地手册或文件夹中筛选候选文档
+2. 按问题检索最相关的章节与片段
+3. 提取证据并生成简短回答
+4. 在证据不足、冲突或歧义时明确标注不确定性
 
-```bash
-python ./scripts/embedded_lookup.py "哪个寄存器位用来使能 SPI DMA？"
+## 文件结构
+
+```text
+embedded-manual-lookup/
+├── SKILL.md
+├── README.md
+├── README.en.md
+├── references/
+│   └── usage.md
+└── scripts/
+    └── embedded_lookup.py
 ```
 
-## Skill 包装结构
+## 兼容性
 
-仓库中也包含最小 Claude skill / plugin 结构：
-
-- `.claude-plugin/plugin.json`
-- `skills/embedded-lookup/SKILL.md`
-
-真正的实现位于 `scripts/embedded_lookup.py`，而 `SKILL.md` 只是一个薄包装层。
+- 适合支持 `npx skills add` 的技能安装流程
+- 也保留本地 Python CLI 直接运行方式
+- 当前范围仅限本地文本/PDF 手册检索
 
 ## 说明
 
