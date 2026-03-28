@@ -105,5 +105,5 @@ embedded-manual-lookup/
 ## Notes
 
 - Supported inputs are local text files and text-based PDFs.
-- This tool is for manual lookup only.
+- This tool is for manual lookup usually.
 - OCR-heavy PDFs, schematics, netlists, and remote crawling are out of scope.
