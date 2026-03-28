@@ -2,7 +2,7 @@
 
 [中文说明](./README.md)
 
-A lightweight local manual lookup skill for embedded development, designed for Claude Code style skill installation and local grounded manual retrieval.
+A lightweight local manual lookup skill for embedded development, designed for Claude Code or codex style skill installation and local grounded manual retrieval.
 
 ## Features
 
