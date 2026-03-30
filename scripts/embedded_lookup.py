@@ -74,6 +74,16 @@ GENERIC_DEVICE_TOKENS = {
     "REQUIREMENTS",
 }
 GENERIC_REVISION_VALUES = {"version", "revision", "rev", "ver"}
+PIN_NAME_RE = re.compile(r"\bP[A-Z]\d{1,2}\b")
+SIGNAL_NAME_RE = re.compile(r"\b[A-Z]{2,}[A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+PACKAGE_NAME_RE = re.compile(
+    r"\b(?:LQFP|TQFP|UFBGA|BGA|QFN|UFQFPN|WLCSP|SOIC|DIP)[- ]?\d+\b|\b\d{2,3}-pin\b",
+    re.IGNORECASE,
+)
+REGISTER_FIELD_RE = re.compile(
+    r"\b(?:bit|field)\s+\d+\s+([A-Z][A-Z0-9_]{1,31})\b",
+    re.IGNORECASE,
+)
 STOP_WORDS = {
     "the",
     "and",
@@ -281,6 +291,24 @@ class RetrievalResult:
     sources: list[EvidenceRecord]
     open_questions: list[str]
     searched_documents: list[str]
+    structured_summary: StructuredSummary | None = None
+
+
+@dataclass
+class StructuredSummaryField:
+    """Grounded field rendered inside an optional structured summary."""
+
+    label: str
+    value: str
+
+
+@dataclass
+class StructuredSummary:
+    """Optional runtime-only structured summary for confident answers."""
+
+    kind: str
+    title: str
+    fields: list[StructuredSummaryField]
 
 
 @dataclass
@@ -1218,7 +1246,9 @@ class EmbeddedRetrievalPrototype:
             for section in document.sections:
                 heading_text = " ".join(section.heading_path)
                 heading_score = self._token_overlap_score(query_tokens, heading_text)
-                body_score = self._token_overlap_score(query_tokens, section.text[:1200])
+                body_window = section.text[:12000] if self._is_pin_intent_query(question) else section.text[:1200]
+                intent_window = section.text[:12000] if self._is_pin_intent_query(question) else section.text[:1800]
+                body_score = self._token_overlap_score(query_tokens, body_window)
                 score = (heading_score * 2.0) + body_score
                 if heading_score > 0 and body_score > 0:
                     score += 0.75
@@ -1227,7 +1257,7 @@ class EmbeddedRetrievalPrototype:
                 score += self._question_intent_bonus(
                     question,
                     heading_text,
-                    section.text[:1800],
+                    intent_window,
                 )
                 if score > 0:
                     hits.append(ScoredItem(score=score, item=section))
@@ -1253,6 +1283,9 @@ class EmbeddedRetrievalPrototype:
                     register_answer_quality = self._register_answer_quality(question, chunk.text)
                     if register_answer_quality:
                         score += register_answer_quality * 2.5
+                pin_answer_quality = self._pin_mapping_answer_quality(question, chunk.text)
+                if pin_answer_quality:
+                    score += pin_answer_quality
                 if score > section_hit.score:
                     hits.append(ScoredItem(score=score, item=chunk))
         deduped = self._dedupe_chunks(hits)
@@ -1340,24 +1373,14 @@ class EmbeddedRetrievalPrototype:
                 reason="No grounded answer found from the selected manuals.",
             )
 
-        if self._should_gate_on_ambiguity(question, documents, evidence):
-            return self._build_ambiguous_result(question, evidence, searched_documents)
-
-        if self._should_gate_on_conflict(question, documents, evidence):
-            return self._build_conflict_result(question, documents, evidence, searched_documents)
-
-        if self._is_absence_query(question) and not self._supports_absence_claim(question, evidence):
-            return self._build_not_found_result(
-                question,
-                searched_documents,
-                reason="No grounded answer found for the requested feature check; the top matches were too weak or lexically ambiguous to confirm presence or absence.",
-            )
-
-        if self._should_gate_on_descriptive_gap(question, evidence):
-            return self._build_insufficient_coverage_result(question, evidence, searched_documents)
-
-        if self._should_gate_on_register_gap(question, evidence):
-            return self._build_insufficient_coverage_result(question, evidence, searched_documents)
+        guardrail_result = self._build_guardrail_result(
+            question,
+            documents,
+            evidence,
+            searched_documents,
+        )
+        if guardrail_result is not None:
+            return guardrail_result
 
         short_answer = self._build_grounded_short_answer(question, evidence)
         key_evidence = [
@@ -1397,7 +1420,39 @@ class EmbeddedRetrievalPrototype:
             sources=evidence,
             open_questions=open_questions,
             searched_documents=searched_documents,
+            structured_summary=self._build_structured_summary(question, evidence),
         )
+
+    def _build_guardrail_result(
+        self,
+        question: str,
+        documents: list[DocumentRecord],
+        evidence: list[EvidenceRecord],
+        searched_documents: list[str],
+    ) -> RetrievalResult | None:
+        if self._should_gate_on_ambiguity(question, documents, evidence):
+            return self._build_ambiguous_result(question, evidence, searched_documents)
+
+        if self._should_gate_on_conflict(question, documents, evidence):
+            return self._build_conflict_result(question, documents, evidence, searched_documents)
+
+        if self._is_absence_query(question) and not self._supports_absence_claim(question, evidence):
+            return self._build_not_found_result(
+                question,
+                searched_documents,
+                reason="No grounded answer found for the requested feature check; the top matches were too weak or lexically ambiguous to confirm presence or absence.",
+            )
+
+        if self._should_gate_on_descriptive_gap(question, evidence):
+            return self._build_insufficient_coverage_result(question, evidence, searched_documents)
+
+        if self._should_gate_on_register_gap(question, evidence):
+            return self._build_insufficient_coverage_result(question, evidence, searched_documents)
+
+        if self._should_gate_on_pin_mapping_gap(question, evidence):
+            return self._build_insufficient_coverage_result(question, evidence, searched_documents)
+
+        return None
 
     def _metadata_filter_bonus(self, document: DocumentRecord) -> float:
         bonus = 0.0
@@ -1549,6 +1604,32 @@ class EmbeddedRetrievalPrototype:
                 ):
                     bonus -= 3.2
 
+        if self._is_pin_intent_query(question):
+            question_signals = [candidate.lower() for candidate in SIGNAL_NAME_RE.findall(question)]
+            package_match = PACKAGE_NAME_RE.search(question)
+            has_package_match = bool(package_match and package_match.group(0).lower() in lowered_body)
+            has_pin_table_context = any(
+                term in lowered_heading or term in lowered_body
+                for term in [
+                    "pinouts and pin description",
+                    "pin definitions",
+                    "pinout",
+                    "pin name",
+                    "alternate functions",
+                ]
+            )
+            has_signal_match = any(signal in lowered_body for signal in question_signals)
+            has_pin_name = bool(PIN_NAME_RE.search(body_text))
+
+            if has_pin_table_context:
+                bonus += 3.5
+            if has_package_match:
+                bonus += 2.5
+            if has_signal_match:
+                bonus += 4.5
+            if has_signal_match and has_pin_name:
+                bonus += 2.5
+
         return bonus
 
     def _register_specific_tokens(self, question: str) -> list[str]:
@@ -1611,10 +1692,22 @@ class EmbeddedRetrievalPrototype:
         return ordered
 
     def _should_gate_on_ambiguity(self, question: str, documents: list[DocumentRecord], evidence: list[EvidenceRecord]) -> bool:
-        if not self.source.is_dir() or len(documents) <= 1 or len(evidence) <= 1:
+        if not self.source.is_dir() or not evidence:
             return False
 
         top_entry = evidence[0]
+        if len(documents) == 1:
+            if any([self.filters.device, self.filters.document_type, self.filters.revision]):
+                return False
+            if self._evidence_directly_answers(question, top_entry):
+                return False
+            if not self._looks_numeric(question):
+                return False
+            return bool(self._missing_requirement_tokens(question, evidence[:1]))
+
+        if len(evidence) <= 1:
+            return False
+
         competing_paths = {
             entry.document_path
             for entry in evidence[:3]
@@ -1680,6 +1773,8 @@ class EmbeddedRetrievalPrototype:
             return False
         if not self._looks_numeric(question):
             return False
+        if self._is_pin_intent_query(question) and not self._has_supported_pin_mapping_answer(question, evidence):
+            return True
 
         top_entry = evidence[0]
         top_missing_tokens = self._missing_requirement_tokens(question, [top_entry])
@@ -1688,6 +1783,8 @@ class EmbeddedRetrievalPrototype:
             top_entry.full_text if top_entry.full_text else top_entry.excerpt,
         ) is not None
         if top_has_numeric_answer and top_missing_tokens:
+            return True
+        if self._is_pin_intent_query(question) and top_missing_tokens:
             return True
 
         direct_answer_entries = [
@@ -1802,9 +1899,8 @@ class EmbeddedRetrievalPrototype:
         if len(distinct_numeric_answers) > 1:
             short_answer = "Different source candidates suggest different numeric answers, so I can't choose one grounded value yet."
         elif numeric_candidates:
-            suggested_label, suggested_answer = numeric_candidates[0]
             short_answer = (
-                f"{suggested_label} suggests {suggested_answer}, but the other candidate sources do not support a single grounded answer yet."
+                "One candidate source surfaces a numeric-looking value, but the other candidate sources do not support a single grounded answer yet."
             )
         else:
             short_answer = "The current folder results point to different candidate sources, but none of them supports one grounded numeric answer yet."
@@ -2125,6 +2221,408 @@ class EmbeddedRetrievalPrototype:
 
         return None
 
+    def _build_structured_summary(
+        self,
+        question: str,
+        evidence: list[EvidenceRecord],
+    ) -> StructuredSummary | None:
+        if not evidence:
+            return None
+
+        top_entry = evidence[0]
+        source_text = top_entry.full_text if top_entry.full_text else top_entry.excerpt
+        summary_signal_text = f"{top_entry.section} {source_text}"
+
+        if self._is_register_lookup_query(question):
+            register_name = self._extract_register_answer(question, source_text)
+            if register_name:
+                return self._build_register_summary(question, source_text, register_name)
+
+        if self._is_pin_intent_query(question):
+            if self._is_pin_mapping_lookup_query(question, summary_signal_text):
+                pin_summary = self._build_pin_summary(question, summary_signal_text)
+                if pin_summary is not None:
+                    return pin_summary
+            return None
+
+        if self._looks_numeric(question):
+            numeric_answer = self._extract_numeric_answer(question, source_text)
+            if numeric_answer:
+                return self._build_parameter_summary(question, source_text, numeric_answer)
+
+        return None
+
+    def _build_register_summary(
+        self,
+        question: str,
+        source_text: str,
+        register_name: str,
+    ) -> StructuredSummary | None:
+        lowered_question = question.lower()
+        lowered_text = self._normalize_search_text(source_text).lower()
+        peripheral = register_name.split("_", 1)[0] if "_" in register_name else None
+        field_or_bit = self._extract_register_field_or_bit(source_text)
+        purpose = None
+        if "spi" in lowered_question and "dma" in lowered_question and any(
+            term in lowered_text
+            for term in ["tx buffer dma enable", "rx buffer dma enable", "txdmaen", "rxdmaen"]
+        ):
+            purpose = "Contains the SPI DMA enable bits."
+        access_notes = self._extract_register_access_notes(source_text)
+
+        return self._make_structured_summary(
+            kind="register",
+            title="Register Summary",
+            field_pairs=[
+                ("Peripheral", peripheral),
+                ("Register", register_name),
+                ("Field / Bit", field_or_bit),
+                ("Purpose", purpose),
+                ("Access Notes", access_notes),
+            ],
+        )
+
+    def _extract_register_field_or_bit(self, text: str) -> str | None:
+        lowered_text = self._normalize_search_text(text).lower()
+        if "txdmaen" in lowered_text and "rxdmaen" in lowered_text:
+            return "TXDMAEN, RXDMAEN"
+
+        match = REGISTER_FIELD_RE.search(text)
+        if match:
+            return match.group(1).upper()
+        return None
+
+    def _extract_register_access_notes(self, text: str) -> str | None:
+        lowered_text = self._normalize_search_text(text).lower()
+        if "read/write" in lowered_text or "read write" in lowered_text or "r/w" in lowered_text:
+            return "Read/write."
+        if "read only" in lowered_text:
+            return "Read only."
+        if "write only" in lowered_text:
+            return "Write only."
+        return None
+
+    def _is_pin_mapping_lookup_query(self, question: str, source_text: str) -> bool:
+        question_signal = self._normalize_search_text(question).lower()
+        evidence_signal = self._normalize_search_text(source_text).lower()
+        return self._has_pin_question_anchor(question_signal) and self._has_pin_evidence_anchor(
+            evidence_signal
+        )
+
+    def _has_pin_question_anchor(self, text: str) -> bool:
+        return any(
+            term in text
+            for term in [
+                "which pin",
+                "what pin",
+                "pinout",
+                "alternate function",
+                "gpio",
+                "pad",
+                "ball",
+                "package",
+            ]
+        ) or bool(re.search(r"\bpin\b|\baf(?:\d+)?\b|\bp[a-z]\d{1,2}\b", text))
+
+    def _has_pin_evidence_anchor(self, text: str) -> bool:
+        lowered_text = text.lower()
+        return any(
+            term in lowered_text
+            for term in [
+                "pinout",
+                "alternate function",
+                "alternate functions",
+                "gpio",
+                "pad",
+                "ball",
+                "package",
+            ]
+        ) or bool(re.search(r"\bp[a-z]\d{1,2}\b", text, flags=re.IGNORECASE)) or bool(
+            re.search(r"\baf(?:\d+)?\b", text, flags=re.IGNORECASE)
+            and re.search(r"\b[a-z]{2,}[a-z0-9]*(?:_[a-z0-9]+)+\b", text, flags=re.IGNORECASE)
+        )
+
+    def _pin_mapping_answer_quality(self, question: str, text: str) -> float:
+        if not self._is_pin_intent_query(question):
+            return 0.0
+
+        quality = 0.0
+        if self._build_pin_summary(question, text) is not None:
+            quality += 8.0
+        normalized_text = self._normalize_search_text(text)
+        if self._extract_package_name(question, normalized_text):
+            quality += 1.5
+        if any(
+            term in normalized_text.lower()
+            for term in ["pin definitions", "pin name", "alternate functions"]
+        ):
+            quality += 1.5
+        return quality
+
+    def _build_pin_summary(
+        self,
+        question: str,
+        source_text: str,
+    ) -> StructuredSummary | None:
+        signal_or_function = self._extract_pin_signal_or_function(question, source_text)
+        pin_name = self._extract_pin_name(question, source_text)
+        package_name = self._extract_package_name(question, source_text)
+        direction_or_role = self._extract_pin_direction_or_role(source_text)
+        if not pin_name or not signal_or_function:
+            return None
+
+        return self._make_structured_summary(
+            kind="pin",
+            title="Pin Summary",
+            field_pairs=[
+                ("Signal / Function", signal_or_function),
+                ("Pin Name", pin_name),
+                ("Package / Variant", package_name),
+                ("Direction / Role", direction_or_role),
+            ],
+        )
+
+    def _extract_pin_signal_or_function(self, question: str, source_text: str) -> str | None:
+        source_upper = source_text.upper()
+        question_signals = [candidate.upper() for candidate in SIGNAL_NAME_RE.findall(question)]
+        for normalized in question_signals:
+            if normalized in source_upper:
+                return normalized
+        if question_signals:
+            return None
+
+        question_af = re.search(r"\bAF\d+\b", question, flags=re.IGNORECASE)
+        if question_af:
+            normalized_af = question_af.group(0).upper()
+            if normalized_af in source_upper:
+                return normalized_af
+            return None
+
+        source_candidates = [candidate.upper() for candidate in SIGNAL_NAME_RE.findall(source_text)]
+        for candidate in source_candidates:
+            if candidate.endswith(("_CR1", "_CR2", "_SR", "_DR")):
+                continue
+            return candidate
+
+        source_af = re.search(r"\bAF\d+\b", source_text, flags=re.IGNORECASE)
+        if source_af:
+            return source_af.group(0).upper()
+
+        return None
+
+    def _extract_pin_name(self, question: str, source_text: str) -> str | None:
+        mapping_values = self._extract_pin_mapping_values(question, source_text)
+        if mapping_values:
+            return mapping_values
+
+        source_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(source_text)]
+        question_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+        for normalized in question_pins:
+            if normalized in source_pins:
+                return normalized
+
+        question_has_explicit_signal = bool(
+            SIGNAL_NAME_RE.search(question) or re.search(r"\bAF\d+\b", question, flags=re.IGNORECASE)
+        )
+        if question_has_explicit_signal:
+            return None
+
+        if source_pins:
+            return source_pins[0]
+        return question_pins[0] if question_pins else None
+
+    def _extract_package_name(self, question: str, source_text: str) -> str | None:
+        question_match = PACKAGE_NAME_RE.search(question)
+        if question_match and question_match.group(0).upper() in source_text.upper():
+            return question_match.group(0).upper()
+        return None
+
+    def _extract_pin_mapping_values(self, question: str, source_text: str) -> str | None:
+        signal_or_function = self._extract_pin_signal_or_function(question, source_text)
+        if not signal_or_function:
+            return None
+
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in source_text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+        target_index = next(
+            (
+                index
+                for index, line in enumerate(normalized_lines)
+                if signal_or_function in line.upper() and PIN_NAME_RE.search(line)
+            ),
+            None,
+        )
+        if target_index is None:
+            return None
+
+        row_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(normalized_lines[target_index])]
+        if not row_pins:
+            return None
+
+        if target_index > 0:
+            remap_conditions = [
+                f"{name.upper()} = {value}"
+                for name, value in re.findall(
+                    r"\b([A-Z0-9_]+)\s*=\s*([01])\b",
+                    normalized_lines[target_index - 1],
+                    flags=re.IGNORECASE,
+                )
+            ]
+            if len(remap_conditions) >= len(row_pins):
+                return "; ".join(
+                    f"{pin} ({condition})"
+                    for pin, condition in zip(row_pins, remap_conditions)
+                )
+
+        if len(row_pins) == 1:
+            return row_pins[0]
+        return " / ".join(row_pins)
+
+    def _build_pin_grounded_short_answer(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+    ) -> str | None:
+        source_text = entry.full_text if entry.full_text else entry.excerpt
+        signal_or_function = self._extract_pin_signal_or_function(question, source_text)
+        if not signal_or_function:
+            return None
+
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in source_text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+        target_index = next(
+            (
+                index
+                for index, line in enumerate(normalized_lines)
+                if signal_or_function in line.upper() and PIN_NAME_RE.search(line)
+            ),
+            None,
+        )
+        if target_index is None:
+            pin_name = self._extract_pin_name(question, source_text)
+            if not pin_name:
+                return None
+            return (
+                f"The strongest grounded evidence indicates that {signal_or_function} maps to {pin_name} "
+                f"in [S1] {entry.section} (page {entry.page})."
+            )
+
+        row_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(normalized_lines[target_index])]
+        if not row_pins:
+            return None
+
+        if target_index > 0:
+            remap_conditions = [
+                f"{name.upper()} = {value}"
+                for name, value in re.findall(
+                    r"\b([A-Z0-9_]+)\s*=\s*([01])\b",
+                    normalized_lines[target_index - 1],
+                    flags=re.IGNORECASE,
+                )
+            ]
+            if len(remap_conditions) >= len(row_pins):
+                mapping_text = " and ".join(
+                    f"{pin} when {condition}"
+                    for pin, condition in zip(row_pins, remap_conditions)
+                )
+                return (
+                    f"The strongest grounded evidence indicates that {signal_or_function} maps to {mapping_text} "
+                    f"in [S1] {entry.section} (page {entry.page})."
+                )
+
+        joined_pins = " / ".join(row_pins) if len(row_pins) > 1 else row_pins[0]
+        return (
+            f"The strongest grounded evidence indicates that {signal_or_function} maps to {joined_pins} "
+            f"in [S1] {entry.section} (page {entry.page})."
+        )
+
+    def _extract_pin_direction_or_role(self, source_text: str) -> str | None:
+        lowered_text = self._normalize_search_text(source_text).lower()
+        if "bidirectional" in lowered_text or "input/output" in lowered_text or "i/o" in lowered_text:
+            return "Bidirectional I/O."
+        if "input" in lowered_text and "output" in lowered_text:
+            return "Input/output."
+        if "input" in lowered_text:
+            return "Input."
+        if "output" in lowered_text:
+            return "Output."
+        if "power" in lowered_text or "supply" in lowered_text:
+            return "Power."
+        if "ground" in lowered_text or "gnd" in lowered_text:
+            return "Ground."
+        return None
+
+    def _build_parameter_summary(
+        self,
+        question: str,
+        source_text: str,
+        numeric_answer: str,
+    ) -> StructuredSummary | None:
+        value_or_range, unit = self._split_numeric_answer(numeric_answer)
+        parameter_name = self._extract_parameter_name(question, source_text)
+        operating_conditions = self._extract_parameter_conditions(source_text)
+
+        return self._make_structured_summary(
+            kind="electrical_parameter",
+            title="Parameter Summary",
+            field_pairs=[
+                ("Parameter", parameter_name),
+                ("Value / Range", value_or_range),
+                ("Unit", unit),
+                ("Test / Operating Conditions", operating_conditions),
+            ],
+        )
+
+    def _split_numeric_answer(self, numeric_answer: str) -> tuple[str, str | None]:
+        match = re.match(r"(.+?)\s+([A-Za-z%]+)$", numeric_answer.strip())
+        if not match:
+            return numeric_answer.strip(), None
+        value_or_range, unit = match.groups()
+        return value_or_range.strip(), unit
+
+    def _extract_parameter_name(self, question: str, source_text: str) -> str | None:
+        lowered_question = question.lower()
+        lowered_text = self._normalize_search_text(source_text).lower()
+        if "vdd" in lowered_question or "vdd" in lowered_text:
+            if "standard operating voltage" in lowered_text:
+                return "VDD standard operating voltage"
+            if "operating voltage" in lowered_text:
+                return "VDD operating voltage"
+            return "VDD"
+        return None
+
+    def _extract_parameter_conditions(self, source_text: str) -> str | None:
+        lowered_text = self._normalize_search_text(source_text).lower()
+        if "standard operating conditions" in lowered_text:
+            return "Standard operating conditions."
+        if "operating conditions" in lowered_text:
+            return "Operating conditions."
+        if "standard operating voltage" in lowered_text:
+            return "Standard operating voltage row."
+        return None
+
+    def _make_structured_summary(
+        self,
+        *,
+        kind: str,
+        title: str,
+        field_pairs: list[tuple[str, str | None]],
+    ) -> StructuredSummary | None:
+        fields = [
+            StructuredSummaryField(label=label, value=value.strip())
+            for label, value in field_pairs
+            if value and value.strip()
+        ]
+        if not fields:
+            return None
+        return StructuredSummary(kind=kind, title=title, fields=fields)
+
 
     def _extract_numeric_answer(self, question: str, text: str) -> str | None:
         lowered_question = question.lower()
@@ -2164,6 +2662,34 @@ class EmbeddedRetrievalPrototype:
             return f"{lower} to {upper} {unit.upper()}"
 
         return None
+
+    def _should_gate_on_pin_mapping_gap(self, question: str, evidence: list[EvidenceRecord]) -> bool:
+        if not evidence:
+            return False
+        if not self._is_pin_intent_query(question):
+            return False
+        return not self._has_supported_pin_mapping_answer(question, evidence)
+
+    def _has_supported_pin_mapping_answer(self, question: str, evidence: list[EvidenceRecord]) -> bool:
+        if not evidence:
+            return False
+
+        top_entry = evidence[0]
+        source_text = top_entry.full_text if top_entry.full_text else top_entry.excerpt
+        summary_signal_text = f"{top_entry.section} {source_text}"
+        if not self._is_pin_mapping_lookup_query(question, summary_signal_text):
+            return False
+        return self._build_pin_summary(question, summary_signal_text) is not None
+
+    def _is_pin_intent_query(self, question: str) -> bool:
+        question_signal = self._normalize_search_text(question).lower()
+        if self._has_pin_question_anchor(question_signal):
+            return True
+        if SIGNAL_NAME_RE.search(question) and any(
+            term in question_signal for term in ["which", "provides", "maps", "mapped", "route", "routed"]
+        ):
+            return True
+        return False
 
     def _comparison_signal_text(self, entry: EvidenceRecord) -> str:
         return self._normalize_search_text(
@@ -2502,6 +3028,12 @@ class EmbeddedRetrievalPrototype:
         top_entry = evidence[0]
         excerpt = top_entry.excerpt
         source_text = top_entry.full_text if top_entry.full_text else excerpt
+        pin_answer = None
+        if self._is_pin_intent_query(question):
+            pin_answer = self._build_pin_grounded_short_answer(question, top_entry)
+        if pin_answer:
+            return pin_answer
+
         numeric_answer = self._extract_numeric_answer(question, source_text) if self._looks_numeric(question) else None
         if numeric_answer:
             return (
@@ -2676,7 +3208,29 @@ class EmbeddedRetrievalPrototype:
 
     def _looks_numeric(self, question: str) -> bool:
         lowered = question.lower()
-        return any(keyword in lowered for keyword in ["timing", "limit", "max", "min", "ns", "mhz", "voltage", "current"]) or any(char.isdigit() for char in question)
+        explicit_numeric_intent = any(
+            keyword in lowered
+            for keyword in [
+                "timing",
+                "limit",
+                "max",
+                "min",
+                "ns",
+                "us",
+                "ms",
+                "hz",
+                "khz",
+                "mhz",
+                "ghz",
+                "voltage",
+                "current",
+                "range",
+                "frequency",
+            ]
+        )
+        if self._is_pin_intent_query(question) and not explicit_numeric_intent:
+            return False
+        return explicit_numeric_intent or any(char.isdigit() for char in question)
 
     def _contains_numeric_signal(self, text: str) -> bool:
         return bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:ns|us|ms|s|hz|khz|mhz|ghz|v|mv|a|ma|ua|%)\b", text.lower()))
@@ -2696,7 +3250,7 @@ class EmbeddedRetrievalPrototype:
 
 
 def _result_to_dict(result: RetrievalResult) -> dict[str, Any]:
-    return {
+    payload = {
         "question": result.question,
         "source": result.source,
         "filters": asdict(result.filters),
@@ -2706,6 +3260,9 @@ def _result_to_dict(result: RetrievalResult) -> dict[str, Any]:
         "open_questions": result.open_questions,
         "searched_documents": result.searched_documents,
     }
+    if result.structured_summary is not None:
+        payload["structured_summary"] = asdict(result.structured_summary)
+    return payload
 
 
 def _configure_stdio() -> None:
@@ -2756,6 +3313,11 @@ def _print_human_result(result: RetrievalResult) -> None:
     print("### Short Answer")
     print(result.short_answer)
     print()
+    if result.structured_summary is not None:
+        print(f"### {result.structured_summary.title}")
+        for field in result.structured_summary.fields:
+            print(f"- {field.label}: {field.value}")
+        print()
     print("### Key Evidence")
     if result.key_evidence:
         for line in result.key_evidence:

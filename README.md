@@ -92,8 +92,14 @@ embedded-manual-lookup/
 ├── README.en.md
 ├── references/
 │   └── usage.md
-└── scripts/
-    └── embedded_lookup.py
+├── scripts/
+│   └── embedded_lookup.py
+└── spec/
+    ├── PRD.md
+    └── tasks/
+        └── structured-lookup-template/
+            ├── PRD.md
+            └── spec.md
 ```
 
 ## 兼容性
