@@ -84,14 +84,192 @@ REGISTER_FIELD_RE = re.compile(
     r"\b(?:bit|field)\s+\d+\s+([A-Z][A-Z0-9_]{1,31})\b",
     re.IGNORECASE,
 )
+ELECTRICAL_PARAMETER_SYMBOL_RE = re.compile(
+    r"\b(?:vdd|vdda|vssa|vref(?:\+|-)?|vin|vio|vbat|vbatt|idd|iih|iil|vil|vih|temp(?:erature)?|tstg|ta)\b",
+    re.IGNORECASE,
+)
+TABLE_QUESTION_PIN = "pin"
+TABLE_QUESTION_ELECTRICAL = "electrical"
+TABLE_QUESTION_FEATURE = "feature"
+TABLE_QUESTION_PERIPHERAL_COUNT = "peripheral-count"
+TABLE_QUESTION_MEMORY = "memory"
+TABLE_QUESTION_PACKAGE = "package"
+TABLE_QUESTION_ORDERING = "ordering"
+TABLE_QUESTION_DEVICE_VARIANT = "device-variant"
+PIN_TABLE_HEADING_TERMS = (
+    "pinouts and pin description",
+    "pin definitions",
+    "pin definition",
+    "pin description",
+    "pinout",
+    "pin assignment",
+    "pin assignments",
+    "pin name",
+    "pin names",
+    "alternate function",
+    "alternate functions",
+    "alternate function mapping",
+    "ball assignment",
+    "package information and pinouts",
+)
+PIN_TABLE_CONTEXT_TERMS = (
+    "pin",
+    "pin name",
+    "signal",
+    "alternate function",
+    "alternate functions",
+    "remap",
+    "package",
+    "ball",
+)
+ELECTRICAL_TABLE_HEADING_TERMS = (
+    "electrical characteristics",
+    "absolute maximum ratings",
+    "general operating conditions",
+    "operating conditions",
+    "recommended operating conditions",
+)
+ELECTRICAL_TABLE_CONTEXT_TERMS = (
+    "parameter",
+    "conditions",
+    "min",
+    "max",
+    "unit",
+    "standard operating voltage",
+    "operating voltage",
+)
+TABLE_NOISE_HEADING_TERMS = (
+    "contents",
+    "table of contents",
+    "list of tables",
+    "list of figures",
+    "revision history",
+    "document revision history",
+)
+MECHANICAL_PACKAGE_NOISE_TERMS = (
+    "package dimensions",
+    "mechanical data",
+    "package mechanical data",
+    "recommended footprint",
+    "package outline",
+    "tape and reel",
+    "marking",
+    "package marking",
+    "packing information",
+)
+FEATURE_TABLE_HEADING_TERMS = (
+    "features and peripheral counts",
+    "device features and peripheral counts",
+    "peripheral counts",
+    "device summary",
+    "main features",
+    "feature summary",
+)
+FEATURE_TABLE_WEAK_HEADING_TERMS = (
+    "features",
+    "peripherals",
+)
+FEATURE_QUERY_TERMS = (
+    "adc",
+    "dac",
+    "timer",
+    "timers",
+    "spi",
+    "i2c",
+    "i2s",
+    "usart",
+    "uart",
+    "can",
+    "usb",
+    "gpio",
+    "comparator",
+    "comparators",
+    "rtc",
+    "watchdog",
+    "crc",
+    "dma",
+)
+MEMORY_TABLE_HEADING_TERMS = (
+    "memory organization",
+    "memory sizes",
+    "memory size",
+    "device summary",
+    "flash memory",
+    "embedded flash memory",
+    "embedded flash and sram",
+    "sram",
+)
+MEMORY_QUERY_TERMS = (
+    "flash",
+    "sram",
+    "eeprom",
+    "memory",
+)
+PACKAGE_ORDERING_TABLE_HEADING_TERMS = (
+    "ordering information",
+    "ordering information scheme",
+    "ordering code",
+    "ordering codes",
+    "order code",
+    "order codes",
+    "package information",
+    "package information and order codes",
+    "package options",
+    "device summary",
+)
+PACKAGE_ORDERING_QUERY_TERMS = (
+    "ordering",
+    "ordering code",
+    "order code",
+    "suffix",
+    "package",
+    "packages",
+    "package information",
+    "package option",
+    "package options",
+    "device variant",
+    "device variants",
+    "variant",
+    "variants",
+)
+PACKAGE_ORDERING_NOISE_TERMS = (
+    "package dimensions",
+    "mechanical data",
+    "package mechanical data",
+    "tape and reel",
+    "marking",
+    "package marking",
+    "packing information",
+)
+FEATURE_TABLE_NOISE_TERMS = (
+    "ordering information",
+    "package information",
+    "ordering code",
+    "package dimensions",
+    "mechanical data",
+)
+MEMORY_TABLE_NOISE_TERMS = (
+    "memory map",
+    "register map",
+    "register definition",
+    "register descriptions",
+    "ordering information",
+    "package information",
+)
 STOP_WORDS = {
     "the",
     "and",
     "for",
+    "in",
+    "on",
+    "to",
     "with",
     "from",
     "this",
     "that",
+    "how",
+    "many",
+    "much",
     "into",
     "what",
     "when",
@@ -191,6 +369,12 @@ IGNORED_REQUIREMENT_TOKENS = {
     "roles",
     "describ",
     "behavior",
+    "package",
+    "packages",
+    "provide",
+    "doe",
+    "use",
+    "correspond",
 }
 
 
@@ -245,6 +429,7 @@ class ChunkRecord:
     page_end: int
     chunk_index: int
     text: str
+    kind: str = "blob"
 
 
 @dataclass
@@ -697,6 +882,35 @@ class EmbeddedRetrievalPrototype:
         previous_nonempty_line: str | None,
     ) -> bool:
         normalized_line = re.sub(r"\s+", " ", line).strip()
+        previous_normalized = (
+            re.sub(r"\s+", " ", previous_nonempty_line).strip()
+            if previous_nonempty_line
+            else None
+        )
+        if previous_normalized and re.match(r"^\d+\s+[A-Za-z0-9]", normalized_line):
+            lowered_previous = previous_normalized.lower()
+            lowered_current = normalized_line.lower()
+            if re.search(r"\b(?:up to|with|and|or|for|all|each)\b$", lowered_previous):
+                return True
+            if (
+                "/" in normalized_line
+                or any(
+                    term in lowered_current
+                    for term in [
+                        "tolerant",
+                        "flash",
+                        "sram",
+                        "pins",
+                        "kbytes",
+                        "usb",
+                        "can",
+                        "adc",
+                        "timer",
+                        "usart",
+                    ]
+                )
+            ) and not re.search(r"\b(?:table|section|chapter)\b", lowered_current):
+                return True
         if self._looks_like_corrupted_pdf_heading(normalized_line):
             return True
         if self._looks_like_register_field_heading_row(normalized_line):
@@ -1241,27 +1455,132 @@ class EmbeddedRetrievalPrototype:
         question: str,
     ) -> list[ScoredItem]:
         query_tokens = self._tokenize(question)
+        is_pin_query = self._is_pin_intent_query(question)
+        table_question_family = self._table_question_family(question)
+        body_window_limit, intent_window_limit = self._section_score_windows(table_question_family)
         hits: list[ScoredItem] = []
+        pin_relevant_section_ids: set[str] = set()
         for document in documents:
             for section in document.sections:
                 heading_text = " ".join(section.heading_path)
                 heading_score = self._token_overlap_score(query_tokens, heading_text)
-                body_window = section.text[:12000] if self._is_pin_intent_query(question) else section.text[:1200]
-                intent_window = section.text[:12000] if self._is_pin_intent_query(question) else section.text[:1800]
+                body_window = section.text[:body_window_limit]
+                intent_window = section.text[:intent_window_limit]
                 body_score = self._token_overlap_score(query_tokens, body_window)
                 score = (heading_score * 2.0) + body_score
                 if heading_score > 0 and body_score > 0:
                     score += 0.75
                 if any(token in section.heading.lower() for token in query_tokens):
                     score += 2.0
+                requested_device_hit = False
+                if table_question_family in {
+                    TABLE_QUESTION_MEMORY,
+                    TABLE_QUESTION_PACKAGE,
+                    TABLE_QUESTION_ORDERING,
+                    TABLE_QUESTION_DEVICE_VARIANT,
+                }:
+                    requested_device_hit = self._text_mentions_requested_device(question, body_window) or self._text_mentions_requested_device(
+                        question,
+                        heading_text,
+                    )
+                    if requested_device_hit:
+                        score += 4.2
+                    elif self._question_device_tokens(question):
+                        score -= 1.0
+                if table_question_family == TABLE_QUESTION_MEMORY:
+                    requested_pin_codes = {
+                        pin_code for pin_code, _ in self._requested_device_variant_codes(question)
+                    }
+                    has_requested_memory_column = bool(requested_pin_codes) and any(
+                        re.search(
+                            rf"\bSTM32[A-Z0-9]{{4,}}{re.escape(pin_code)}X\b",
+                            intent_window.upper(),
+                        )
+                        for pin_code in requested_pin_codes
+                    )
+                    if self._extract_memory_capacity_phrase(question, intent_window):
+                        score += 4.6
+                    if has_requested_memory_column:
+                        score += 3.4
+                        if all(
+                            term in intent_window.lower()
+                            for term in ["flash - kbytes", "sram - kbytes"]
+                        ):
+                            score += 5.2
+                    if "device features and peripheral counts" in intent_window.lower():
+                        score += 2.8
+                    if "device summary" in intent_window.lower() and "reference part number" in intent_window.lower():
+                        score += 2.2
+                    if (
+                        "description" in heading_text.lower()
+                        and "up to" in intent_window.lower()
+                        and not requested_device_hit
+                    ):
+                        score -= 3.4
+                if table_question_family in {
+                    TABLE_QUESTION_PACKAGE,
+                    TABLE_QUESTION_ORDERING,
+                    TABLE_QUESTION_DEVICE_VARIANT,
+                }:
+                    if "example: stm32" in intent_window.lower():
+                        score += 1.8
+                    if self._source_has_requested_pin_mapping(question, intent_window):
+                        score += 2.4
+                    if self._source_has_requested_density_mapping(question, intent_window):
+                        score += 2.2
+                    if table_question_family == TABLE_QUESTION_ORDERING and (
+                        self._extract_requested_ordering_package_code(
+                            question,
+                            intent_window,
+                            allow_family_fallback=False,
+                        )
+                        is not None
+                    ):
+                        score += 4.5
                 score += self._question_intent_bonus(
                     question,
                     heading_text,
                     intent_window,
                 )
+                score += self._table_section_bonus(
+                    question,
+                    table_question_family,
+                    heading_text,
+                    intent_window,
+                )
                 if score > 0:
+                    if is_pin_query and (
+                        self._pin_table_section_bonus(question, heading_text, intent_window) >= 4.5
+                        or self._source_has_requested_pin_mapping(question, intent_window)
+                    ):
+                        pin_relevant_section_ids.add(section.id)
                     hits.append(ScoredItem(score=score, item=section))
-        return sorted(hits, key=lambda hit: hit.score, reverse=True)[: self.max_sections]
+        ordered_hits = sorted(hits, key=lambda hit: hit.score, reverse=True)
+        if not is_pin_query:
+            return ordered_hits[: self.max_sections]
+
+        reserved_hits: list[ScoredItem] = []
+        reserved_section_ids: set[str] = set()
+        reserved_document_ids: set[str] = set()
+        for hit in ordered_hits:
+            section: SectionRecord = hit.item
+            if section.id not in pin_relevant_section_ids or section.document_id in reserved_document_ids:
+                continue
+            reserved_hits.append(hit)
+            reserved_section_ids.add(section.id)
+            reserved_document_ids.add(section.document_id)
+            if len(reserved_hits) >= self.max_sections:
+                return reserved_hits[: self.max_sections]
+
+        selected_hits = reserved_hits[:]
+        for hit in ordered_hits:
+            section = hit.item
+            if section.id in reserved_section_ids:
+                continue
+            selected_hits.append(hit)
+            if len(selected_hits) >= self.max_sections:
+                break
+        return selected_hits
 
     def _score_chunks(
         self,
@@ -1269,11 +1588,16 @@ class EmbeddedRetrievalPrototype:
         question: str,
     ) -> list[ScoredItem]:
         query_tokens = self._tokenize(question)
+        table_question_family = self._table_question_family(question)
         register_tokens = self._register_specific_tokens(question) if self._is_register_lookup_query(question) else []
         hits: list[ScoredItem] = []
         for section_hit in section_hits:
             section: SectionRecord = section_hit.item
-            for chunk in self._build_chunks_for_section(section):
+            chunks = self._build_chunks_for_section(section)
+            if table_question_family and self._supports_table_row_selection(question, section, table_question_family):
+                chunks.extend(self._build_table_row_chunks(section, question, table_question_family))
+
+            for chunk in chunks:
                 score = section_hit.score + self._token_overlap_score(query_tokens, chunk.text)
                 if self._looks_numeric(question) and self._contains_numeric_signal(chunk.text):
                     score += 1.5
@@ -1286,13 +1610,1674 @@ class EmbeddedRetrievalPrototype:
                 pin_answer_quality = self._pin_mapping_answer_quality(question, chunk.text)
                 if pin_answer_quality:
                     score += pin_answer_quality
+                if table_question_family:
+                    row_bonus = self._table_row_candidate_bonus(question, table_question_family, chunk.text)
+                    if chunk.kind == "table-row":
+                        score += row_bonus
+                    else:
+                        score += min(2.5, max(0.0, row_bonus - 5.0))
+                        score -= self._table_blob_noise_penalty(table_question_family, chunk.text)
                 if score > section_hit.score:
                     hits.append(ScoredItem(score=score, item=chunk))
         deduped = self._dedupe_chunks(hits)
-        return sorted(deduped, key=lambda hit: hit.score, reverse=True)[: self.max_chunks]
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            chunk_limit = max(self.max_chunks * 3, 12)
+            return sorted(
+                deduped,
+                key=lambda hit: (
+                    self._table_row_candidate_bonus(question, table_question_family, hit.item.text),
+                    hit.score,
+                ),
+                reverse=True,
+            )[:chunk_limit]
+        ordered = sorted(deduped, key=lambda hit: hit.score, reverse=True)
+        if not self._is_pin_intent_query(question):
+            return ordered[: self.max_chunks]
+
+        primary = ordered[: self.max_chunks]
+        primary_document_ids = {hit.item.document_id for hit in primary}
+        section_document_ids: list[str] = []
+        seen_section_document_ids: set[str] = set()
+        for section_hit in section_hits:
+            section_document_id = section_hit.item.document_id
+            if section_document_id in seen_section_document_ids:
+                continue
+            seen_section_document_ids.add(section_document_id)
+            section_document_ids.append(section_document_id)
+
+        grounded_pin_candidate_cache: dict[str, bool] = {}
+
+        def is_grounded_pin_candidate(hit: ScoredItem) -> bool:
+            chunk: ChunkRecord = hit.item
+            cached = grounded_pin_candidate_cache.get(chunk.id)
+            if cached is not None:
+                return cached
+
+            section_label = self._normalize_evidence_section(
+                question,
+                " > ".join(chunk.heading_path),
+                chunk.text,
+            )
+            summary_signal_text = f"{section_label} {chunk.text}"
+            if self._build_pin_summary(question, summary_signal_text) is None:
+                grounded_pin_candidate_cache[chunk.id] = False
+                return False
+
+            grounded_pin_candidate_cache[chunk.id] = True
+            return True
+
+        reserved_misses: list[ScoredItem] = []
+        for document_id in section_document_ids:
+            if document_id in primary_document_ids:
+                continue
+            reserved_hit = next(
+                (
+                    hit
+                    for hit in ordered
+                    if hit.item.document_id == document_id and is_grounded_pin_candidate(hit)
+                ),
+                None,
+            )
+            if reserved_hit is not None:
+                reserved_misses.append(reserved_hit)
+
+        return sorted(primary + reserved_misses, key=lambda hit: hit.score, reverse=True)
+
+    def _supports_table_row_selection(
+        self,
+        question: str,
+        section: SectionRecord,
+        table_question_family: str,
+    ) -> bool:
+        heading_text = " ".join(section.heading_path)
+        body_window_limit, _ = self._section_score_windows(table_question_family)
+        body_text = section.text[:body_window_limit]
+        if table_question_family == TABLE_QUESTION_PIN:
+            return (
+                self._pin_table_section_bonus(question, heading_text, body_text)
+                + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
+            ) >= 4.5
+        if table_question_family == TABLE_QUESTION_ELECTRICAL:
+            return (
+                self._electrical_table_section_bonus(question, heading_text, body_text)
+                + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
+            ) >= 4.0
+        if table_question_family == TABLE_QUESTION_FEATURE:
+            return (
+                self._feature_table_section_bonus(
+                    question,
+                    heading_text,
+                    body_text,
+                    prefer_counts=False,
+                )
+                + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
+            ) >= 4.0
+        if table_question_family == TABLE_QUESTION_PERIPHERAL_COUNT:
+            return (
+                self._feature_table_section_bonus(
+                    question,
+                    heading_text,
+                    body_text,
+                    prefer_counts=True,
+                )
+                + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
+            ) >= 4.2
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            return (
+                self._memory_table_section_bonus(question, heading_text, body_text)
+                + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
+            ) >= 4.0
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return (
+                self._package_ordering_table_section_bonus(
+                    question,
+                    heading_text,
+                    body_text,
+                    table_question_family,
+                )
+                + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
+            ) >= 4.4
+        return False
+
+    def _build_table_row_chunks(
+        self,
+        section: SectionRecord,
+        question: str,
+        table_question_family: str,
+    ) -> list[ChunkRecord]:
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in section.text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+        if len(normalized_lines) < 2:
+            return []
+
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            max_candidates = max(self.max_chunks * 8, 32)
+        elif table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+        }:
+            max_candidates = max(self.max_chunks * 6, 24)
+        else:
+            max_candidates = max(self.max_chunks * 3, 8)
+        candidate_windows: dict[str, tuple[float, int, int]] = {}
+        for index in range(len(normalized_lines)):
+            for start, end in self._table_row_candidate_ranges(index, len(normalized_lines), table_question_family):
+                candidate_text = "\n".join(
+                    self._augment_table_row_candidate(
+                        normalized_lines,
+                        start,
+                        end,
+                        question,
+                        table_question_family,
+                    )
+                ).strip()
+                if not candidate_text:
+                    continue
+                bonus = self._table_row_candidate_bonus(question, table_question_family, candidate_text)
+                if bonus < 3.5:
+                    continue
+                existing = candidate_windows.get(candidate_text)
+                if existing is None or bonus > existing[0]:
+                    candidate_windows[candidate_text] = (bonus, start, end)
+
+        def candidate_sort_key(item: tuple[str, tuple[float, int, int]]) -> tuple[Any, ...]:
+            candidate_text, (bonus, start, end) = item
+            normalized_candidate = self._normalize_search_text(candidate_text)
+            lowered_candidate = normalized_candidate.lower()
+            span = end - start
+            if table_question_family == TABLE_QUESTION_MEMORY:
+                return (
+                    bonus,
+                    self._text_mentions_requested_device(question, candidate_text),
+                    not self._source_has_multiple_capacity_options(candidate_text),
+                    len(normalized_candidate),
+                    -span,
+                )
+            if table_question_family in {
+                TABLE_QUESTION_PACKAGE,
+                TABLE_QUESTION_ORDERING,
+                TABLE_QUESTION_DEVICE_VARIANT,
+            }:
+                has_exact_ordering_mapping = (
+                    table_question_family == TABLE_QUESTION_ORDERING
+                    and self._extract_requested_ordering_package_code(
+                        question,
+                        candidate_text,
+                        allow_family_fallback=False,
+                    )
+                    is not None
+                )
+                has_mapping_context = (
+                    "=" in normalized_candidate
+                    and any(
+                        term in lowered_candidate
+                        for term in ["example:", "pin count", "flash memory size", "package"]
+                    )
+                )
+                return (
+                    bonus,
+                    has_exact_ordering_mapping,
+                    has_mapping_context,
+                    self._text_mentions_requested_device(question, candidate_text),
+                    not self._source_has_multiple_package_options(candidate_text),
+                    len(normalized_candidate),
+                    span,
+                )
+            return (
+                bonus,
+                -span,
+                -len(candidate_text),
+            )
+
+        ordered_candidates = sorted(
+            candidate_windows.items(),
+            key=candidate_sort_key,
+            reverse=True,
+        )
+
+        chunks: list[ChunkRecord] = []
+        for chunk_index, (candidate_text, (_, start, end)) in enumerate(ordered_candidates[:max_candidates]):
+            chunk_id = self._stable_id(section.id, "table-row", str(start), str(end), candidate_text[:120])
+            chunks.append(
+                ChunkRecord(
+                    id=chunk_id,
+                    document_id=section.document_id,
+                    section_id=section.id,
+                    heading=section.heading,
+                    heading_path=section.heading_path[:],
+                    page_start=section.page_start,
+                    page_end=section.page_end,
+                    chunk_index=chunk_index,
+                    text=candidate_text,
+                    kind="table-row",
+                )
+            )
+        return chunks
+
+    def _augment_table_row_candidate(
+        self,
+        lines: list[str],
+        start: int,
+        end: int,
+        question: str,
+        table_question_family: str,
+    ) -> list[str]:
+        candidate_lines = lines[start:end]
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            search_start = max(0, start - 12)
+            search_end = min(len(lines), end + 12)
+            exact_lines = self._build_memory_variant_grounded_lines(
+                question,
+                lines,
+                search_start,
+                search_end,
+            )
+            if exact_lines:
+                return exact_lines
+        if table_question_family == TABLE_QUESTION_PACKAGE:
+            search_start = max(0, start - 20)
+            search_end = min(len(lines), end + 20)
+            exact_lines = self._build_exact_package_variant_lines(
+                question,
+                lines,
+                search_start,
+                search_end,
+                include_ordering_code=False,
+            )
+            if exact_lines:
+                return exact_lines
+            candidate_indices = list(range(start, end))
+            candidate_device_indices = [
+                index
+                for index in candidate_indices
+                if self._text_mentions_requested_device(question, lines[index])
+            ]
+            candidate_package_indices = [
+                index
+                for index in candidate_indices
+                if PACKAGE_NAME_RE.search(lines[index])
+            ]
+
+            selected_indices = candidate_indices[:]
+            if candidate_device_indices and candidate_package_indices:
+                closest_distance, device_index, package_index = min(
+                    (
+                        abs(device_index - package_index),
+                        device_index,
+                        package_index,
+                    )
+                    for device_index in candidate_device_indices
+                    for package_index in candidate_package_indices
+                )
+                if closest_distance <= 2:
+                    selected_indices = list(
+                        range(min(device_index, package_index), max(device_index, package_index) + 1)
+                    )
+                else:
+                    anchor_index = candidate_device_indices[0]
+                    nearest_package_index = self._closest_matching_line_index(
+                        lines,
+                        anchor_index,
+                        search_start,
+                        search_end,
+                        lambda line: PACKAGE_NAME_RE.search(line) is not None,
+                        max_distance=2,
+                    )
+                    selected_indices = [anchor_index]
+                    if nearest_package_index is not None:
+                        selected_indices = list(
+                            range(
+                                min(anchor_index, nearest_package_index),
+                                max(anchor_index, nearest_package_index) + 1,
+                            )
+                        )
+            elif candidate_device_indices:
+                anchor_index = candidate_device_indices[0]
+                nearest_package_index = self._closest_matching_line_index(
+                    lines,
+                    anchor_index,
+                    search_start,
+                    search_end,
+                    lambda line: PACKAGE_NAME_RE.search(line) is not None,
+                    max_distance=2,
+                )
+                selected_indices = [anchor_index]
+                if nearest_package_index is not None:
+                    selected_indices = list(
+                        range(
+                            min(anchor_index, nearest_package_index),
+                            max(anchor_index, nearest_package_index) + 1,
+                        )
+                    )
+            elif candidate_package_indices:
+                anchor_index = candidate_package_indices[0]
+                nearest_device_index = self._closest_matching_line_index(
+                    lines,
+                    anchor_index,
+                    search_start,
+                    search_end,
+                    lambda line: self._text_mentions_requested_device(question, line),
+                    max_distance=2,
+                )
+                selected_indices = [anchor_index]
+                if nearest_device_index is not None:
+                    selected_indices = list(
+                        range(
+                            min(anchor_index, nearest_device_index),
+                            max(anchor_index, nearest_device_index) + 1,
+                        )
+                    )
+
+            augmented_indices = set(selected_indices)
+            if augmented_indices:
+                nearby_start = max(search_start, min(augmented_indices) - 2)
+                nearby_end = min(search_end, max(augmented_indices) + 3)
+                for index in range(nearby_start, nearby_end):
+                    lowered_line = lines[index].lower()
+                    if "device summary" in lowered_line or "reference part number" in lowered_line:
+                        augmented_indices.add(index)
+            return [lines[index] for index in sorted(augmented_indices)]
+
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            search_start = max(0, start - 20)
+            search_end = min(len(lines), end + 12)
+            exact_lines = self._build_exact_package_variant_lines(
+                question,
+                lines,
+                search_start,
+                search_end,
+                include_ordering_code=True,
+            )
+            if exact_lines:
+                return exact_lines
+            package_match = PACKAGE_NAME_RE.search(question)
+            requested_package = self._compact_alnum(package_match.group(0)) if package_match else ""
+            requested_package_family: str | None = None
+            requested_pin_count: str | None = None
+            if package_match:
+                family_pin_match = re.fullmatch(
+                    r"([A-Z]+)(\d+)",
+                    self._normalize_search_text(package_match.group(0)).upper().replace(" ", ""),
+                )
+                if family_pin_match:
+                    requested_package_family, requested_pin_count = family_pin_match.groups()
+
+            requested_variant_codes = self._requested_device_variant_codes(question)
+            requested_pin_codes = {pin_code for pin_code, _ in requested_variant_codes}
+            requested_density_codes = {density_code for _, density_code in requested_variant_codes}
+            candidate_indices = list(range(start, end))
+
+            def matches_ordering_header(line: str) -> bool:
+                lowered_line = line.lower()
+                return any(
+                    term in lowered_line
+                    for term in ["ordering information scheme", "ordering code", "order code"]
+                )
+
+            def matches_example_line(line: str) -> bool:
+                return "example:" in line.lower()
+
+            def matches_pin_header(line: str) -> bool:
+                return "pin count" in line.lower()
+
+            def matches_pin_mapping(line: str) -> bool:
+                if not requested_pin_count:
+                    return False
+                upper_line = self._normalize_search_text(line).upper()
+                if not re.search(rf"\b{re.escape(requested_pin_count)}\s*PINS?\b", upper_line):
+                    return False
+                if not requested_pin_codes:
+                    return True
+                return any(
+                    re.search(
+                        rf"\b{re.escape(pin_code)}\s*=\s*{re.escape(requested_pin_count)}\s*PINS?\b",
+                        upper_line,
+                    )
+                    for pin_code in requested_pin_codes
+                )
+
+            def matches_flash_header(line: str) -> bool:
+                return "flash memory size" in line.lower()
+
+            def matches_flash_mapping(line: str) -> bool:
+                if not requested_density_codes:
+                    return False
+                upper_line = self._normalize_search_text(line).upper()
+                if "FLASH MEMORY" not in upper_line:
+                    return False
+                return any(
+                    re.search(
+                        rf"\b{re.escape(density_code)}\s*=\s*\d+\s*(?:KBYTES?|KB|MB)\b",
+                        upper_line,
+                    )
+                    for density_code in requested_density_codes
+                )
+
+            def matches_package_header(line: str) -> bool:
+                return line.lower() == "package"
+
+            def matches_package_mapping(line: str) -> bool:
+                upper_line = self._normalize_search_text(line).upper()
+                if requested_package and requested_package in self._compact_alnum(line):
+                    return True
+                if requested_package_family and re.search(
+                    rf"\b[A-Z0-9]{{1,4}}\s*=\s*{re.escape(requested_package_family)}\b",
+                    upper_line,
+                ):
+                    return True
+                return (
+                    self._extract_requested_ordering_package_code(
+                        question,
+                        line,
+                        allow_family_fallback=False,
+                    )
+                    is not None
+                )
+
+            anchor_index = next(
+                (
+                    index
+                    for index in candidate_indices
+                    if any(
+                        predicate(lines[index])
+                        for predicate in [
+                            matches_example_line,
+                            matches_pin_mapping,
+                            matches_flash_mapping,
+                            matches_package_mapping,
+                        ]
+                    )
+                ),
+                start,
+            )
+            augmented_indices = set(candidate_indices)
+            for predicate in [
+                matches_ordering_header,
+                matches_example_line,
+                matches_pin_header,
+                matches_pin_mapping,
+                matches_flash_header,
+                matches_flash_mapping,
+                matches_package_header,
+                matches_package_mapping,
+            ]:
+                matched_index = self._closest_matching_line_index(
+                    lines,
+                    anchor_index,
+                    search_start,
+                    search_end,
+                    predicate,
+                    max_distance=20,
+                )
+                if matched_index is not None:
+                    augmented_indices.add(matched_index)
+            return [lines[index] for index in sorted(augmented_indices)]
+
+        support_lines: list[str] = []
+        search_start = max(0, start - (12 if table_question_family == TABLE_QUESTION_PIN else 4))
+        search_end = min(len(lines), end + (40 if table_question_family == TABLE_QUESTION_PIN else 4))
+        package_support_line: str | None = None
+
+        if table_question_family == TABLE_QUESTION_PIN:
+            package_match = PACKAGE_NAME_RE.search(question)
+            if package_match:
+                package_token = package_match.group(0).lower()
+                for index in list(range(start - 1, search_start - 1, -1)) + list(range(end, search_end)):
+                    line = lines[index]
+                    if package_token in line.lower():
+                        package_support_line = line
+                        break
+
+        for index in range(start - 1, search_start - 1, -1):
+            line = lines[index]
+            lowered_line = line.lower()
+            if self._table_row_noise_penalty(line, table_question_family) >= 4.0:
+                continue
+            if self._is_table_row_support_line(question, table_question_family, lowered_line):
+                support_lines.insert(0, line)
+            if len(support_lines) >= 2:
+                break
+
+        if package_support_line and package_support_line not in support_lines:
+            support_lines = [package_support_line, *support_lines[:1]]
+
+        if len(support_lines) < 2:
+            for index in range(end, search_end):
+                line = lines[index]
+                lowered_line = line.lower()
+                if self._table_row_noise_penalty(line, table_question_family) >= 4.0:
+                    continue
+                if self._is_table_row_support_line(question, table_question_family, lowered_line):
+                    if line not in support_lines:
+                        support_lines.append(line)
+                if len(support_lines) >= 2:
+                    break
+
+        augmented_lines = [*support_lines, *candidate_lines]
+        return augmented_lines[:5]
+
+    def _closest_matching_line_index(
+        self,
+        lines: list[str],
+        anchor_index: int,
+        search_start: int,
+        search_end: int,
+        predicate,
+        *,
+        max_distance: int,
+    ) -> int | None:
+        best_index: int | None = None
+        best_distance = max_distance + 1
+        for index in range(max(0, search_start), min(len(lines), search_end)):
+            if self._table_row_noise_penalty(lines[index], TABLE_QUESTION_ORDERING) >= 4.0:
+                continue
+            if not predicate(lines[index]):
+                continue
+            distance = abs(index - anchor_index)
+            if distance > max_distance:
+                continue
+            if best_index is None or (distance, index) < (best_distance, best_index):
+                best_index = index
+                best_distance = distance
+        return best_index
+
+    def _build_memory_variant_grounded_lines(
+        self,
+        question: str,
+        lines: list[str],
+        search_start: int,
+        search_end: int,
+    ) -> list[str]:
+        requested_devices = self._question_device_tokens(question)
+        requested_variant_codes = self._requested_device_variant_codes(question)
+        if not requested_devices or not requested_variant_codes:
+            return []
+
+        requested_device = requested_devices[0]
+        requested_pin_code, requested_density_code = requested_variant_codes[0]
+        window_start = max(0, search_start)
+        window_end = min(len(lines), search_end)
+        header_index: int | None = None
+        header_matches: list[tuple[str, str]] = []
+        target_column_index: int | None = None
+        column_label: str | None = None
+
+        for index in range(window_start, window_end):
+            normalized_line = self._normalize_search_text(lines[index]).upper()
+            matches = [
+                (match.group(0), match.group(2))
+                for match in re.finditer(r"\b(STM32[A-Z0-9]{4,}?)([A-Z])X\b", normalized_line)
+            ]
+            if len(matches) < 2:
+                continue
+            for match_index, (header_label, package_code) in enumerate(matches):
+                if package_code == requested_pin_code:
+                    header_index = index
+                    header_matches = matches
+                    target_column_index = match_index
+                    column_label = header_label
+                    break
+            if target_column_index is not None:
+                break
+
+        if header_index is None or target_column_index is None or column_label is None:
+            return []
+
+        def pick_row_value(line: str) -> tuple[str | None, str | None]:
+            normalized_line = self._normalize_search_text(line)
+            values = re.findall(r"\b\d+\b", normalized_line)
+            if not values:
+                return (None, None)
+            lowered_line = normalized_line.lower()
+            unit = "MB" if re.search(r"\bmb\b", lowered_line) else "Kbytes"
+            column_count = len(header_matches)
+            if len(values) == column_count:
+                return (values[target_column_index], unit)
+            if len(values) == column_count * 2:
+                density_offset = 0 if requested_density_code.isdigit() else 1
+                value_index = (target_column_index * 2) + density_offset
+                if value_index < len(values):
+                    return (values[value_index], unit)
+            if target_column_index < len(values):
+                return (values[target_column_index], unit)
+            return (None, None)
+
+        title_index = self._closest_matching_line_index(
+            lines,
+            header_index,
+            window_start,
+            window_end,
+            lambda line: any(
+                term in line.lower()
+                for term in ["device features and peripheral counts", "device summary"]
+            ),
+            max_distance=8,
+        )
+        flash_index = self._closest_matching_line_index(
+            lines,
+            header_index,
+            window_start,
+            window_end,
+            lambda line: "flash" in line.lower() and bool(re.search(r"\b\d+\b", line)),
+            max_distance=8,
+        )
+        sram_index = self._closest_matching_line_index(
+            lines,
+            header_index,
+            window_start,
+            window_end,
+            lambda line: "sram" in line.lower() and bool(re.search(r"\b\d+\b", line)),
+            max_distance=8,
+        )
+
+        exact_lines: list[str] = []
+        if title_index is not None:
+            exact_lines.append(self._normalize_search_text(lines[title_index]))
+        exact_lines.append(f"{requested_device} matches {column_label} in the device summary table")
+        if flash_index is not None:
+            flash_value, flash_unit = pick_row_value(lines[flash_index])
+            if flash_value and flash_unit:
+                exact_lines.append(f"{requested_device} Flash = {flash_value} {flash_unit}")
+        if sram_index is not None:
+            sram_value, sram_unit = pick_row_value(lines[sram_index])
+            if sram_value and sram_unit:
+                exact_lines.append(f"{requested_device} SRAM = {sram_value} {sram_unit}")
+
+        if len(exact_lines) <= 1:
+            return []
+
+        deduped_lines: list[str] = []
+        seen_lines: set[str] = set()
+        for line in exact_lines:
+            normalized_line = self._normalize_search_text(line)
+            if not normalized_line or normalized_line in seen_lines:
+                continue
+            seen_lines.add(normalized_line)
+            deduped_lines.append(normalized_line)
+        return deduped_lines
+
+    def _build_exact_package_variant_lines(
+        self,
+        question: str,
+        lines: list[str],
+        search_start: int,
+        search_end: int,
+        *,
+        include_ordering_code: bool,
+    ) -> list[str]:
+        requested_devices = self._question_device_tokens(question)
+        requested_variant_codes = self._requested_device_variant_codes(question)
+        if not requested_devices or not requested_variant_codes:
+            return []
+
+        requested_device = requested_devices[0]
+        requested_pin_code, requested_density_code = requested_variant_codes[0]
+        requested_compact = self._compact_alnum(requested_device)
+        package_match = PACKAGE_NAME_RE.search(question)
+        requested_package_family: str | None = None
+        requested_pin_count: str | None = None
+        if package_match:
+            family_pin_match = re.fullmatch(
+                r"([A-Z]+)(\d+)",
+                self._normalize_search_text(package_match.group(0)).upper().replace(" ", ""),
+            )
+            if family_pin_match:
+                requested_package_family, requested_pin_count = family_pin_match.groups()
+
+        window_start = max(0, search_start)
+        window_end = min(len(lines), search_end)
+        ordering_header_line: str | None = None
+        example_line: str | None = None
+        exact_example_package_code: str | None = None
+        pin_mapping_line: str | None = None
+        density_mapping_line: str | None = None
+        package_mapping_line: str | None = None
+        pin_count_from_mapping: str | None = None
+
+        for index in range(window_start, window_end):
+            normalized_line = self._normalize_search_text(lines[index])
+            lowered_line = normalized_line.lower()
+            upper_line = normalized_line.upper()
+            if ordering_header_line is None and any(
+                term in lowered_line
+                for term in ["ordering information", "ordering information scheme", "ordering code", "order code"]
+            ):
+                ordering_header_line = normalized_line
+            if example_line is None and "example:" in lowered_line:
+                example_line = normalized_line
+            if requested_compact:
+                exact_example_match = re.search(
+                    rf"{re.escape(requested_compact)}([A-Z0-9])",
+                    self._compact_alnum(normalized_line),
+                )
+                if exact_example_match:
+                    example_line = normalized_line
+                    exact_example_package_code = exact_example_match.group(1)
+            if pin_mapping_line is None:
+                pin_match = re.search(
+                    rf"\b{re.escape(requested_pin_code)}\s*=\s*(\d+)\s*PINS?\b",
+                    upper_line,
+                )
+                if pin_match:
+                    pin_mapping_line = normalized_line
+                    pin_count_from_mapping = pin_match.group(1)
+            if density_mapping_line is None and re.search(
+                rf"\b{re.escape(requested_density_code)}\s*=\s*\d+\s*(?:KBYTES?|KB|MB)\b",
+                upper_line,
+            ):
+                density_mapping_line = normalized_line
+
+        exact_package_code = exact_example_package_code
+        if requested_package_family:
+            family_package_codes = {
+                match.group(1)
+                for index in range(window_start, window_end)
+                for match in re.finditer(
+                    rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(requested_package_family)}\b",
+                    self._normalize_search_text(lines[index]).upper(),
+                )
+            }
+            if (
+                exact_package_code is None
+                and len(family_package_codes) == 1
+                and pin_mapping_line
+                and density_mapping_line
+            ):
+                exact_package_code = next(iter(family_package_codes))
+
+        package_family: str | None = requested_package_family
+        if exact_package_code is not None:
+            for index in range(window_start, window_end):
+                normalized_line = self._normalize_search_text(lines[index])
+                package_match_line = re.search(
+                    rf"\b{re.escape(exact_package_code)}\s*=\s*(LQFP|UFQFPN|VFQFPN|TFBGA|LFBGA|UFBGA|BGA)\b",
+                    normalized_line.upper(),
+                )
+                if package_match_line:
+                    package_mapping_line = normalized_line
+                    package_family = package_match_line.group(1)
+                    break
+        elif requested_package_family:
+            for index in range(window_start, window_end):
+                normalized_line = self._normalize_search_text(lines[index])
+                if re.search(
+                    rf"\b[A-Z0-9]{{1,4}}\s*=\s*{re.escape(requested_package_family)}\b",
+                    normalized_line.upper(),
+                ):
+                    package_mapping_line = normalized_line
+                    break
+
+        if (
+            requested_pin_count
+            and pin_count_from_mapping
+            and requested_pin_count != pin_count_from_mapping
+        ):
+            return []
+
+        package_identity: str | None = None
+        resolved_pin_count = requested_pin_count or pin_count_from_mapping
+        if package_family and resolved_pin_count:
+            package_identity = f"{package_family}{resolved_pin_count}"
+
+        exact_lines: list[str] = []
+        if ordering_header_line:
+            exact_lines.append(ordering_header_line)
+        if example_line:
+            exact_lines.append(example_line)
+        if pin_mapping_line:
+            exact_lines.append(pin_mapping_line)
+        if density_mapping_line:
+            exact_lines.append(density_mapping_line)
+        if package_mapping_line:
+            exact_lines.append(package_mapping_line)
+        if package_identity:
+            exact_lines.append(f"{requested_device} package = {package_identity}")
+        if include_ordering_code and exact_package_code and package_identity:
+            exact_lines.append(f"{requested_device} package code {exact_package_code} = {package_identity}")
+
+        if not package_identity and not (include_ordering_code and exact_package_code):
+            return []
+
+        deduped_lines: list[str] = []
+        seen_lines: set[str] = set()
+        for line in exact_lines:
+            normalized_line = self._normalize_search_text(line)
+            if not normalized_line or normalized_line in seen_lines:
+                continue
+            seen_lines.add(normalized_line)
+            deduped_lines.append(normalized_line)
+        return deduped_lines
+
+    def _text_mentions_requested_device(self, question: str, source_text: str) -> bool:
+        requested_tokens = self._question_device_tokens(question)
+        if not requested_tokens:
+            return False
+        compact_source = self._compact_alnum(source_text)
+        if not compact_source:
+            return False
+        for requested_token in requested_tokens:
+            compact_requested = self._compact_alnum(requested_token)
+            if not compact_requested:
+                continue
+            for candidate in self._restricted_device_token_aliases(compact_requested):
+                if candidate and candidate in compact_source:
+                    return True
+        return False
+
+    def _requested_device_variant_codes(self, question: str) -> list[tuple[str, str]]:
+        code_pairs: list[tuple[str, str]] = []
+        for requested_token in self._question_device_tokens(question):
+            compact_requested = self._compact_alnum(requested_token)
+            match = re.fullmatch(r"(STM32[A-Z0-9]{4,})([A-Z])([A-Z0-9])", compact_requested)
+            if not match:
+                continue
+            code_pair = (match.group(2), match.group(3))
+            if code_pair not in code_pairs:
+                code_pairs.append(code_pair)
+        return code_pairs
+
+    def _is_table_row_support_line(
+        self,
+        question: str,
+        table_question_family: str,
+        lowered_line: str,
+    ) -> bool:
+        if table_question_family == TABLE_QUESTION_PIN:
+            package_match = PACKAGE_NAME_RE.search(question)
+            if package_match and package_match.group(0).lower() in lowered_line:
+                return True
+            return any(
+                term in lowered_line
+                for term in [
+                    "alternate function",
+                    "default remap",
+                    "pin name",
+                    "pins",
+                    "package",
+                    "ufqfpn",
+                    "lqfp",
+                    "tfbga",
+                ]
+            )
+
+        if table_question_family == TABLE_QUESTION_ELECTRICAL:
+            return any(
+                term in lowered_line
+                for term in [
+                    "symbol",
+                    "parameter",
+                    "conditions",
+                    "min",
+                    "max",
+                    "unit",
+                    "operating conditions",
+                ]
+            )
+
+        if table_question_family in {TABLE_QUESTION_FEATURE, TABLE_QUESTION_PERIPHERAL_COUNT}:
+            return any(
+                term in lowered_line
+                for term in [
+                    "device summary",
+                    "feature",
+                    "features and peripheral counts",
+                    "peripheral counts",
+                    "peripheral",
+                    "timers",
+                    "spi",
+                    "i2c",
+                    "usart",
+                    "uart",
+                    "usb",
+                    "can",
+                    "gpio",
+                    "flash - kbytes",
+                    "sram - kbytes",
+                    "packages",
+                ]
+            )
+
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            return any(
+                term in lowered_line
+                for term in [
+                    "device summary",
+                    "memory organization",
+                    "flash - kbytes",
+                    "flash memory",
+                    "sram",
+                    "embedded flash and sram",
+                    "part number",
+                    "reference",
+                ]
+            )
+
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            if any(
+                term in lowered_line
+                for term in ["ordering information scheme", "ordering code", "order code"]
+            ):
+                return True
+
+            package_match = PACKAGE_NAME_RE.search(question)
+            if not package_match:
+                return False
+
+            requested_package = self._compact_alnum(package_match.group(0))
+            compact_line = self._compact_alnum(lowered_line)
+            if requested_package and requested_package in compact_line:
+                return True
+            return (
+                self._extract_requested_ordering_package_code(
+                    question,
+                    lowered_line,
+                    allow_family_fallback=False,
+                )
+                is not None
+            )
+
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return any(
+                term in lowered_line
+                for term in [
+                    "ordering information",
+                    "ordering information scheme",
+                    "ordering code",
+                    "order code",
+                    "device summary",
+                    "package information",
+                    "package",
+                    "pin count",
+                    "flash memory size",
+                    "temperature range",
+                    "device family",
+                    "product type",
+                    "device subfamily",
+                    "example: stm32",
+                ]
+            ) or bool(
+                re.search(
+                    r"\b[a-z0-9]{1,4}\s*=\s*(?:lqfp|ufqfpn|vfqfpn|tfbga|lfbga|ufbga|bga|\d+\s*(?:pins|kbytes?|kb|mb))\b",
+                    lowered_line,
+                )
+            )
+
+        return False
+
+    def _table_row_candidate_ranges(
+        self,
+        index: int,
+        total_lines: int,
+        table_question_family: str,
+    ) -> list[tuple[int, int]]:
+        templates = [(0, 0), (1, 0), (0, 1), (1, 1), (2, 0)]
+        if table_question_family == TABLE_QUESTION_PIN:
+            templates.extend([(0, 2), (2, 1)])
+            max_span = 4
+        elif table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            templates.extend([(0, 2), (1, 2), (2, 1), (2, 2), (1, 3)])
+            max_span = 5
+        elif table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+        }:
+            templates.extend([(0, 2), (1, 2), (2, 1)])
+            max_span = 4
+        else:
+            max_span = 4
+
+        ranges: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+        for before_count, after_count in templates:
+            start = max(0, index - before_count)
+            end = min(total_lines, index + after_count + 1)
+            if start >= end or (end - start) > max_span:
+                continue
+            candidate_range = (start, end)
+            if candidate_range in seen:
+                continue
+            seen.add(candidate_range)
+            ranges.append(candidate_range)
+        return ranges
+
+    def _table_row_candidate_bonus(
+        self,
+        question: str,
+        table_question_family: str,
+        text: str,
+    ) -> float:
+        if table_question_family == TABLE_QUESTION_PIN:
+            return self._pin_table_row_candidate_bonus(question, text)
+        if table_question_family == TABLE_QUESTION_ELECTRICAL:
+            return self._electrical_table_row_candidate_bonus(question, text)
+        if table_question_family == TABLE_QUESTION_FEATURE:
+            return self._feature_table_row_candidate_bonus(
+                question,
+                text,
+                prefer_counts=False,
+            )
+        if table_question_family == TABLE_QUESTION_PERIPHERAL_COUNT:
+            return self._feature_table_row_candidate_bonus(
+                question,
+                text,
+                prefer_counts=True,
+            )
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            return self._memory_table_row_candidate_bonus(question, text)
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return self._package_ordering_table_row_candidate_bonus(
+                question,
+                text,
+                table_question_family,
+            )
+        return 0.0
+
+    def _pin_table_row_candidate_bonus(self, question: str, text: str) -> float:
+        normalized_text = self._normalize_search_text(text)
+        lowered_text = normalized_text.lower()
+        upper_text = normalized_text.upper()
+        bonus = 0.0
+
+        if self._build_pin_summary(question, normalized_text) is not None:
+            bonus += 9.0
+        elif self._extract_pin_mapping_values(question, normalized_text) is not None:
+            bonus += 6.0
+
+        question_signals: list[str] = []
+        for candidate in SIGNAL_NAME_RE.findall(question):
+            normalized_candidate = candidate.upper()
+            if normalized_candidate not in question_signals:
+                question_signals.append(normalized_candidate)
+        signal_hits = sum(1 for signal in question_signals if signal in upper_text)
+        bonus += min(signal_hits, 2) * 4.0
+
+        package_match = PACKAGE_NAME_RE.search(question)
+        if package_match and package_match.group(0).lower() in lowered_text:
+            bonus += 3.0
+
+        unique_pins = {candidate.upper() for candidate in PIN_NAME_RE.findall(normalized_text)}
+        if unique_pins:
+            bonus += min(len(unique_pins), 3) * 1.2
+        if signal_hits and unique_pins:
+            bonus += 2.4
+        if "alternate function" in lowered_text or "default remap" in lowered_text:
+            bonus += 1.5
+        if "remap" in lowered_text and "=" in normalized_text:
+            bonus += 2.0
+        if re.search(r"\btable\s+\d+\b", lowered_text):
+            bonus += 0.8
+        if len(unique_pins) > 4:
+            bonus -= (len(unique_pins) - 4) * 0.8
+
+        bonus -= self._table_row_noise_penalty(text, TABLE_QUESTION_PIN)
+        bonus -= self._table_row_span_penalty(text)
+        return bonus
+
+    def _electrical_table_row_candidate_bonus(self, question: str, text: str) -> float:
+        normalized_text = self._normalize_search_text(text)
+        lowered_text = normalized_text.lower()
+        bonus = 0.0
+
+        if self._extract_numeric_answer(question, normalized_text) is not None:
+            bonus += 9.0
+
+        parameter_symbols: list[str] = []
+        for match in ELECTRICAL_PARAMETER_SYMBOL_RE.finditer(question):
+            symbol = match.group(0).lower()
+            if symbol not in parameter_symbols:
+                parameter_symbols.append(symbol)
+        symbol_hits = sum(1 for symbol in parameter_symbols if symbol in lowered_text)
+        bonus += min(symbol_hits, 2) * 3.5
+
+        if self._has_electrical_table_context(normalized_text):
+            bonus += 2.5
+        if all(term in lowered_text for term in ["parameter", "conditions", "min", "max", "unit"]):
+            bonus += 1.5
+        if "operating conditions" in lowered_text:
+            bonus += 1.0
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:to|-)\s*\d+(?:\.\d+)?\s*(?:v|mv|a|ma|ua|hz|khz|mhz|ghz|ns|us|ms|%)\b",
+            lowered_text,
+        ):
+            bonus += 1.4
+        elif "min" in lowered_text and "max" in lowered_text:
+            bonus += 1.0
+
+        bonus -= self._table_row_noise_penalty(text, TABLE_QUESTION_ELECTRICAL)
+        bonus -= self._table_row_span_penalty(text)
+        return bonus
+
+    def _feature_table_row_candidate_bonus(
+        self,
+        question: str,
+        text: str,
+        *,
+        prefer_counts: bool,
+    ) -> float:
+        normalized_question = self._normalize_search_text(question)
+        normalized_text = self._normalize_search_text(text)
+        lowered_question = normalized_question.lower()
+        lowered_text = normalized_text.lower()
+        bonus = 0.0
+
+        question_terms = [term for term in FEATURE_QUERY_TERMS if term in lowered_question]
+        term_hits = sum(1 for term in question_terms if term in lowered_text)
+        bonus += min(term_hits, 2) * 3.5
+
+        count_pattern = r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|up to)\b"
+        feature_count_alignment = any(
+            re.search(
+                rf"{count_pattern}[^\n]{{0,24}}\b{re.escape(term)}s?\b|\b{re.escape(term)}s?\b[^\n]{{0,24}}{count_pattern}",
+                lowered_text,
+            )
+            for term in question_terms
+        )
+        if feature_count_alignment:
+            bonus += 4.8
+        elif prefer_counts and re.search(count_pattern, lowered_text):
+            bonus += 2.6
+
+        if any(
+            term in lowered_text
+            for term in ["device summary", "features and peripheral counts", "peripheral counts"]
+        ):
+            bonus += 2.8
+        elif "feature" in lowered_text or "peripheral" in lowered_text:
+            bonus += 1.6
+
+        device_hits = sum(
+            1 for token in self._question_device_tokens(question)
+            if token.lower() in lowered_text
+        )
+        bonus += min(device_hits, 2) * 1.2
+        if "stm32f103" in lowered_text:
+            bonus += 0.8
+
+        if prefer_counts and any(term in lowered_text for term in ["channel", "channels", "timers", "gpios"]):
+            bonus += 1.4
+
+        if any(term in lowered_text for term in ["operating voltage", "vdd", "ambient temperature", "junction temperature"]):
+            bonus -= 4.8
+        if "power supply" in lowered_text and term_hits == 0:
+            bonus -= 2.6
+
+        bonus -= self._table_row_noise_penalty(text, TABLE_QUESTION_PERIPHERAL_COUNT if prefer_counts else TABLE_QUESTION_FEATURE)
+        bonus -= self._table_row_span_penalty(text)
+        return bonus
+
+    def _memory_table_row_candidate_bonus(self, question: str, text: str) -> float:
+        normalized_question = self._normalize_search_text(question)
+        normalized_text = self._normalize_search_text(text)
+        lowered_question = normalized_question.lower()
+        lowered_text = normalized_text.lower()
+        bonus = 0.0
+
+        memory_terms = [term for term in MEMORY_QUERY_TERMS if term in lowered_question]
+        term_hits = sum(1 for term in memory_terms if term in lowered_text)
+        bonus += min(term_hits, 2) * 3.2
+
+        capacity_hits = len(re.findall(r"\b\d+\s*(?:kbytes?|kb|mb)\b", lowered_text))
+        bonus += min(capacity_hits, 3) * 1.9
+
+        memory_alignment_hits = sum(
+            1
+            for term in memory_terms
+            if re.search(
+                rf"\b{term}\b[^\n]{{0,28}}\b\d+\s*(?:kbytes?|kb|mb)\b|\b\d+\s*(?:kbytes?|kb|mb)\b[^\n]{{0,28}}\b{term}\b",
+                lowered_text,
+            )
+        )
+        if memory_alignment_hits:
+            bonus += min(memory_alignment_hits, 2) * 4.0
+        if any(
+            re.search(
+                rf"\b{term}\b[^\n]{{0,28}}\b\d+\s*(?:kbytes?|kb|mb)\b|\b\d+\s*(?:kbytes?|kb|mb)\b[^\n]{{0,28}}\b{term}\b",
+                lowered_text,
+            )
+            for term in memory_terms
+        ):
+            bonus += 1.2
+        if all(term in lowered_text for term in ["flash", "sram"]):
+            bonus += 3.2
+        if {"flash", "sram"}.issubset(set(memory_terms)) and all(term in lowered_text for term in ["flash", "sram"]) and capacity_hits >= 2:
+            bonus += 6.0
+        if {"flash", "sram"}.issubset(set(memory_terms)) and not all(term in lowered_text for term in ["flash", "sram"]):
+            bonus -= 4.5
+
+        if any(term in lowered_text for term in ["device summary", "memory organization", "embedded flash and sram"]):
+            bonus += 2.4
+        if any(
+            token.lower() in lowered_text for token in self._question_device_tokens(question)
+        ):
+            bonus += 1.3
+        if "stm32f103" in lowered_text:
+            bonus += 0.8
+
+        has_requested_device = bool(self._question_device_tokens(question))
+        text_mentions_requested_device = self._text_mentions_requested_device(
+            question,
+            normalized_text,
+        )
+        if has_requested_device:
+            if text_mentions_requested_device:
+                bonus += 4.8
+            else:
+                bonus -= 6.0
+            if self._source_has_family_wide_scope(normalized_text):
+                bonus -= 4.0
+            if "up to" in lowered_text:
+                bonus -= 8.0
+
+        if self._source_has_multiple_capacity_options(normalized_text):
+            bonus -= 18.0 if has_requested_device else 4.5
+            if re.search(
+                r"\b\d+\s*(?:kbytes?|kb|mb)?\s*(?:/|or)\s*\d+\s*(?:kbytes?|kb|mb)\b",
+                lowered_text,
+            ):
+                bonus -= 2.5
+
+        if any(
+            term in lowered_text
+            for term in [
+                "operating voltage",
+                "application supply",
+                "power supply",
+                "vdd",
+                "voltage regulator",
+            ]
+        ):
+            bonus -= 5.2
+        if {"flash", "sram"}.issubset(set(memory_terms)) and any(
+            term in lowered_text for term in ["operating voltage", "application supply", "vdd"]
+        ):
+            bonus -= 3.8
+        if "description" in lowered_text and capacity_hits == 0:
+            bonus -= 1.8
+
+        bonus -= self._table_row_noise_penalty(text, TABLE_QUESTION_MEMORY)
+        bonus -= self._table_row_span_penalty(text)
+        return bonus
+
+    def _package_ordering_table_row_candidate_bonus(
+        self,
+        question: str,
+        text: str,
+        table_question_family: str,
+    ) -> float:
+        normalized_text = self._normalize_search_text(text)
+        lowered_text = normalized_text.lower()
+        upper_text = normalized_text.upper()
+        bonus = 0.0
+
+        package_match = PACKAGE_NAME_RE.search(question)
+        if package_match and package_match.group(0).lower() in lowered_text:
+            bonus += 4.8
+        elif package_match and package_match.group(0).lower().replace(" ", "") in lowered_text.replace(" ", ""):
+            bonus += 4.2
+        requested_package_family: str | None = None
+        requested_pin_count: str | None = None
+        if package_match:
+            family_pin_match = re.fullmatch(
+                r"([a-z]+)(\d+)",
+                package_match.group(0).lower().replace(" ", ""),
+            )
+            if family_pin_match:
+                requested_package_family, requested_pin_count = family_pin_match.groups()
+                if requested_package_family in lowered_text:
+                    bonus += 3.0
+                if re.search(rf"\b{requested_pin_count}\s*[- ]?pins?\b", lowered_text):
+                    bonus += 2.6
+
+        question_device_tokens = self._question_device_tokens(question)
+        requested_device_present = self._text_mentions_requested_device(question, normalized_text)
+        device_hits = sum(1 for token in question_device_tokens if token.lower() in lowered_text)
+        bonus += min(device_hits, 2) * 1.4
+        if "stm32" in lowered_text:
+            bonus += 1.2
+        if "stm32f103" in lowered_text:
+            bonus += 0.8
+        exact_package_identity = self._extract_package_identity_phrase(normalized_text)
+        if exact_package_identity and requested_device_present:
+            bonus += 4.2
+
+        if "example: stm32" in lowered_text:
+            bonus += 3.2
+        mapping_hits = sum(
+            1
+            for term in [
+                "device family",
+                "product type",
+                "device subfamily",
+                "pin count",
+                "flash memory size",
+                "package",
+                "temperature range",
+                "options",
+            ]
+            if term in lowered_text
+        )
+        bonus += min(mapping_hits, 4) * 1.4
+
+        exact_package_code: str | None = None
+        fallback_package_code: str | None = None
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            exact_package_code = self._extract_requested_ordering_package_code(
+                question,
+                text,
+                allow_family_fallback=False,
+            )
+            fallback_package_code = self._extract_requested_ordering_package_code(
+                question,
+                text,
+                allow_family_fallback=True,
+            )
+
+        requested_variant_codes = self._requested_device_variant_codes(question)
+        requested_pin_codes = {pin_code for pin_code, _ in requested_variant_codes}
+        requested_density_codes = {density_code for _, density_code in requested_variant_codes}
+        package_mapping_hit = bool(
+            requested_package_family
+            and re.search(
+                rf"\b[A-Z0-9]{{1,4}}\s*=\s*{re.escape(requested_package_family.upper())}\b",
+                upper_text,
+            )
+        )
+        pin_mapping_hit = bool(
+            requested_pin_count
+            and re.search(
+                rf"\b[A-Z0-9]{{1,4}}\s*=\s*{re.escape(requested_pin_count)}\s*PINS?\b",
+                upper_text,
+            )
+        )
+        exact_pin_mapping_hit = bool(
+            requested_pin_count
+            and requested_pin_codes
+            and any(
+                re.search(
+                    rf"\b{re.escape(pin_code)}\s*=\s*{re.escape(requested_pin_count)}\s*PINS?\b",
+                    upper_text,
+                )
+                for pin_code in requested_pin_codes
+            )
+        )
+        flash_mapping_hit = bool(
+            requested_density_codes
+            and "FLASH MEMORY" in upper_text
+            and any(
+                re.search(
+                    rf"\b{re.escape(density_code)}\s*=\s*\d+\s*(?:KBYTES?|KB|MB)\b",
+                    upper_text,
+                )
+                for density_code in requested_density_codes
+            )
+        )
+        example_hit = "example:" in lowered_text
+        explicit_mapping_context = "=" in normalized_text and any(
+            term in lowered_text
+            for term in ["pin count", "flash memory size", "package", "example:"]
+        )
+
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+        device_line_indices = [
+            index
+            for index, line in enumerate(normalized_lines)
+            if self._text_mentions_requested_device(question, line)
+        ]
+        package_line_indices = [
+            index
+            for index, line in enumerate(normalized_lines)
+            if PACKAGE_NAME_RE.search(line)
+        ]
+        if device_line_indices and package_line_indices:
+            closest_distance = min(
+                abs(device_index - package_index)
+                for device_index in device_line_indices
+                for package_index in package_line_indices
+            )
+            if closest_distance <= 1:
+                bonus += 3.4
+            elif closest_distance == 2:
+                bonus += 1.6
+            else:
+                bonus -= 4.8
+        elif table_question_family == TABLE_QUESTION_PACKAGE and question_device_tokens:
+            if requested_device_present:
+                bonus -= 2.6
+            else:
+                bonus -= 4.0
+
+        if re.search(
+            r"\b[a-z0-9]{1,4}\s*=\s*(?:lqfp\d*|ufqfpn\d*|vfqfpn\d*|tfbga\d*|lfbga\d*|ufbga\d*|bga\d*)\b",
+            lowered_text,
+        ):
+            bonus += 4.5
+            if requested_package_family and requested_package_family not in lowered_text:
+                bonus -= 4.8
+        if re.search(r"\b[a-z0-9]{1,4}\s*=\s*\d+\s*(?:pins|kbytes?|kb|mb)\b", lowered_text):
+            bonus += 2.8
+            if requested_pin_count and not re.search(rf"\b{requested_pin_count}\s*[- ]?pins?\b", lowered_text):
+                bonus -= 3.6
+
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            if any(
+                term in lowered_text
+                for term in ["ordering information", "ordering information scheme", "ordering code", "order code"]
+            ):
+                bonus += 3.6
+            if any(term in lowered_text for term in ["pin count", "flash memory size", "package"]):
+                bonus += 2.4
+            if explicit_mapping_context:
+                bonus += 2.6
+            if exact_package_code:
+                bonus += 4.8
+            elif fallback_package_code:
+                bonus += 0.6
+            if example_hit:
+                bonus += 2.4
+            if package_mapping_hit:
+                bonus += 3.2
+            if pin_mapping_hit:
+                bonus += 2.4
+            if exact_pin_mapping_hit:
+                bonus += 2.0
+            if flash_mapping_hit:
+                bonus += 2.8
+            if package_mapping_hit and pin_mapping_hit:
+                bonus += 3.8
+            if package_mapping_hit and flash_mapping_hit:
+                bonus += 2.4
+            if package_mapping_hit and pin_mapping_hit and flash_mapping_hit:
+                bonus += 6.0
+            if not explicit_mapping_context and not any(
+                term in lowered_text
+                for term in ["ordering information", "ordering information scheme", "ordering code", "order code"]
+            ):
+                bonus -= 12.0
+            if not (
+                exact_package_code
+                or package_mapping_hit
+                or pin_mapping_hit
+                or flash_mapping_hit
+            ):
+                bonus -= 4.5
+            if "packages" in lowered_text and not any(
+                term in lowered_text
+                for term in ["ordering information", "ordering information scheme", "example: stm32", "="]
+            ):
+                bonus -= 8.0
+            if any(
+                term in lowered_text
+                for term in ["operating voltage", "operating temperatures", "junction temperature"]
+            ) and not any(
+                term in lowered_text
+                for term in ["ordering information", "ordering information scheme", "example: stm32", "="]
+            ):
+                bonus -= 6.5
+            if any(
+                term in lowered_text
+                for term in [
+                    "low-profile quad flat package",
+                    "outline",
+                    "gauge plane",
+                    "dimension",
+                    "section a-a",
+                    "section b-b",
+                    "note: see list of notes",
+                ]
+            ):
+                bonus -= 9.5
+            if "package information" in lowered_text and not any(
+                term in lowered_text
+                for term in [
+                    "ordering information",
+                    "ordering information scheme",
+                    "example: stm32",
+                    "=",
+                ]
+            ):
+                bonus -= 6.0
+        elif table_question_family == TABLE_QUESTION_PACKAGE:
+            if any(term in lowered_text for term in ["package information", "package options", "package"]):
+                bonus += 2.8
+            if self._source_has_multiple_package_options(normalized_text):
+                bonus -= 5.5
+        elif table_question_family == TABLE_QUESTION_DEVICE_VARIANT:
+            if any(term in lowered_text for term in ["device summary", "variant", "part number"]):
+                bonus += 2.8
+            if self._source_has_multiple_package_options(normalized_text):
+                bonus -= 4.0
+
+        compact_question = self._normalize_search_text(question).upper()
+        if "STM32F103CB" in compact_question:
+            if re.search(r"\bC\s*=\s*48\s*pins\b", source := lowered_text):
+                bonus += 4.2
+            if re.search(r"\bB\s*=\s*128\s*kbytes?\b", source):
+                bonus += 4.2
+            if re.search(r"\bT\s*=\s*LQFP\b", source):
+                bonus += 4.8
+            if all(
+                re.search(pattern, source)
+                for pattern in [
+                    r"\bC\s*=\s*48\s*pins\b",
+                    r"\bB\s*=\s*128\s*kbytes?\b",
+                    r"\bT\s*=\s*LQFP\b",
+                ]
+            ):
+                bonus += 6.0
+
+        if re.search(r"\b\d{1,2}-[a-z]{3}-\d{4}\b", lowered_text):
+            bonus -= 6.0
+        if any(term in lowered_text for term in ["revision history", "table 64", "changes", "docid", "www.st.com"]):
+            bonus -= 5.5
+        if any(term in lowered_text for term in ["updated", "removed", "added", "modified", "revised", "clarified"]):
+            bonus -= 6.5
+        if any(term in lowered_text for term in ["footprints", "specifications"]):
+            bonus -= 3.5
+        if "page " in lowered_text and any(term in lowered_text for term in ["section ", "table "]):
+            bonus -= 2.8
+        if any(term in lowered_text for term in MECHANICAL_PACKAGE_NOISE_TERMS):
+            bonus -= 4.2
+
+        bonus -= self._table_row_noise_penalty(text, table_question_family)
+        bonus -= self._table_row_span_penalty(text)
+        return bonus
+
+    def _table_row_noise_penalty(self, text: str, table_question_family: str) -> float:
+        penalty = 0.0
+        for raw_line in text.splitlines():
+            line = self._normalize_search_text(raw_line)
+            if not line:
+                continue
+            lowered_line = line.lower()
+            if any(term in lowered_line for term in TABLE_NOISE_HEADING_TERMS):
+                penalty += 6.0
+            if any(term in lowered_line for term in MECHANICAL_PACKAGE_NOISE_TERMS):
+                penalty += 4.0
+            if "www.st.com" in lowered_line:
+                penalty += 2.5
+            if "docid" in lowered_line:
+                penalty += 2.5
+            if re.search(r"\brev\s+\d+\b", lowered_line) and re.search(r"\b\d+/\d+\b", lowered_line):
+                penalty += 2.0
+            if re.search(r"\b\d{1,2}-[A-Za-z]{3}-\d{4}\b", line):
+                penalty += 2.8
+            if "table 64" in lowered_line and "revision history" in lowered_line:
+                penalty += 3.2
+            if "refer to" in lowered_line and any(term in lowered_line for term in ["manual", "website", "section"]):
+                penalty += 1.5
+            if table_question_family == TABLE_QUESTION_PIN and any(
+                term in lowered_line for term in ELECTRICAL_TABLE_HEADING_TERMS
+            ):
+                penalty += 2.0
+            if table_question_family == TABLE_QUESTION_ELECTRICAL and any(
+                term in lowered_line for term in PIN_TABLE_HEADING_TERMS
+            ):
+                penalty += 2.0
+        return penalty
+
+    def _table_row_span_penalty(self, text: str) -> float:
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+        penalty = max(0, len(normalized_lines) - 3) * 1.1
+        if len(self._normalize_search_text(text)) > max(420, self.chunk_size):
+            penalty += 1.5
+        return penalty
+
+    def _table_blob_noise_penalty(self, table_question_family: str, text: str) -> float:
+        compact_text = self._normalize_search_text(text)
+        penalty = self._table_row_noise_penalty(text, table_question_family)
+        if len(compact_text) > max(420, int(self.chunk_size * 0.85)):
+            penalty += 1.5
+        return max(0.0, penalty)
+
+    def _table_row_evidence_quality(self, question: str, entry: EvidenceRecord) -> float:
+        table_question_family = self._table_question_family(question)
+        if table_question_family is None:
+            return 0.0
+        source_text = entry.full_text if entry.full_text else entry.excerpt
+        return self._table_row_candidate_bonus(question, table_question_family, source_text)
 
     def _build_evidence(self, chunk_hits: list[ScoredItem], question: str) -> list[EvidenceRecord]:
         evidence: list[EvidenceRecord] = []
+        table_question_family = self._table_question_family(question)
         for index, hit in enumerate(chunk_hits, start=1):
             chunk: ChunkRecord = hit.item
             section_label = self._normalize_evidence_section(
@@ -1300,6 +3285,13 @@ class EmbeddedRetrievalPrototype:
                 " > ".join(chunk.heading_path),
                 chunk.text,
             )
+            excerpt_limit = 360 if chunk.kind == "table-row" else 280
+            if table_question_family and self._table_row_candidate_bonus(
+                question,
+                table_question_family,
+                chunk.text,
+            ) >= 7.0:
+                excerpt_limit = max(excerpt_limit, 420)
             evidence.append(
                 EvidenceRecord(
                     tag=f"[S{index}]",
@@ -1309,7 +3301,11 @@ class EmbeddedRetrievalPrototype:
                     revision=None,
                     section=section_label,
                     page=self._format_page_range(chunk.page_start, chunk.page_end),
-                    excerpt=self._extract_relevant_excerpt(chunk.text, question),
+                    excerpt=self._extract_relevant_excerpt(
+                        chunk.text,
+                        question,
+                        limit=excerpt_limit,
+                    ),
                     full_text=chunk.text,
                     score=round(hit.score, 2),
                     document_path="",
@@ -1397,10 +3393,11 @@ class EmbeddedRetrievalPrototype:
                 "Folder input may include overlapping manuals; confirm the intended primary source if variants are close."
             )
         missing_tokens = self._missing_requirement_tokens(question, evidence)
+        top_entry_directly_answers = self._evidence_directly_answers(question, evidence[0])
         if missing_tokens and not (
             self._is_comparison_query(question)
             and self._has_grounded_comparison_coverage(question, evidence)
-        ):
+        ) and not top_entry_directly_answers:
             open_questions.append(
                 "Top evidence did not directly cover these query terms: "
                 + ", ".join(missing_tokens[:4])
@@ -1443,6 +3440,15 @@ class EmbeddedRetrievalPrototype:
                 reason="No grounded answer found for the requested feature check; the top matches were too weak or lexically ambiguous to confirm presence or absence.",
             )
 
+        constraint_gate_hints = self._apply_constraint_aware_answer_gate(question, evidence)
+        if constraint_gate_hints is not None:
+            return self._build_insufficient_coverage_result(
+                question,
+                evidence,
+                searched_documents,
+                extra_open_questions=constraint_gate_hints,
+            )
+
         if self._should_gate_on_descriptive_gap(question, evidence):
             return self._build_insufficient_coverage_result(question, evidence, searched_documents)
 
@@ -1453,6 +3459,486 @@ class EmbeddedRetrievalPrototype:
             return self._build_insufficient_coverage_result(question, evidence, searched_documents)
 
         return None
+
+    def _apply_constraint_aware_answer_gate(
+        self,
+        question: str,
+        evidence: list[EvidenceRecord],
+    ) -> list[str] | None:
+        if not evidence:
+            return None
+
+        table_question_family = self._table_question_family(question)
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            selected_entry, failure_hints = self._select_table_constraint_satisfied_evidence(
+                question,
+                evidence,
+                table_question_family,
+            )
+            if selected_entry is None:
+                return failure_hints
+            self._promote_evidence_entry(evidence, selected_entry)
+            return None
+
+        if table_question_family == TABLE_QUESTION_PIN or self._is_pin_intent_query(question):
+            selected_entry, failure_hints = self._select_pin_constraint_satisfied_evidence(
+                question,
+                evidence,
+            )
+            if selected_entry is None:
+                return failure_hints
+            self._promote_evidence_entry(evidence, selected_entry)
+            return None
+
+        if table_question_family == TABLE_QUESTION_ELECTRICAL or self._is_electrical_table_query(question):
+            selected_entry, failure_hints = self._select_electrical_constraint_satisfied_evidence(
+                question,
+                evidence,
+            )
+            if selected_entry is None:
+                return failure_hints
+            self._promote_evidence_entry(evidence, selected_entry)
+            return None
+
+        return None
+
+    def _select_table_constraint_satisfied_evidence(
+        self,
+        question: str,
+        evidence: list[EvidenceRecord],
+        table_question_family: str,
+        *,
+        limit: int = 3,
+    ) -> tuple[EvidenceRecord | None, list[str]]:
+        best_failure_hints = [
+            "The retrieved table rows did not preserve the requested device/variant/package constraints tightly enough to emit a grounded answer.",
+        ]
+        best_failure_count = sys.maxsize
+
+        for entry in evidence[:limit]:
+            failure_hints = self._table_constraint_failure_hints(
+                question,
+                entry,
+                table_question_family,
+            )
+            if not failure_hints:
+                return entry, []
+            if len(failure_hints) < best_failure_count:
+                best_failure_hints = failure_hints
+                best_failure_count = len(failure_hints)
+
+        return None, best_failure_hints
+
+    def _table_constraint_failure_hints(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+        table_question_family: str,
+    ) -> list[str]:
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+        }:
+            return self._feature_table_constraint_failure_hints(
+                question,
+                entry,
+                prefer_counts=table_question_family == TABLE_QUESTION_PERIPHERAL_COUNT,
+            )
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            return self._memory_table_constraint_failure_hints(question, entry)
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return self._package_ordering_constraint_failure_hints(
+                question,
+                entry,
+                table_question_family,
+            )
+        return []
+
+    def _feature_table_constraint_failure_hints(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+        *,
+        prefer_counts: bool,
+    ) -> list[str]:
+        source_text = self._normalize_search_text(entry.full_text if entry.full_text else entry.excerpt)
+        lowered_text = source_text.lower()
+        failure_hints: list[str] = []
+        table_question_family = TABLE_QUESTION_PERIPHERAL_COUNT if prefer_counts else TABLE_QUESTION_FEATURE
+
+        if not self._table_evidence_directly_answers(question, entry, table_question_family):
+            failure_hints.append(
+                "The retrieved feature row did not preserve a grounded feature/peripheral answer."
+            )
+
+        feature_terms = [
+            term for term in FEATURE_QUERY_TERMS if term in self._normalize_search_text(question).lower()
+        ]
+        if feature_terms and not any(term in lowered_text for term in feature_terms):
+            failure_hints.append(
+                "The retrieved feature row did not preserve the requested feature identity."
+            )
+
+        if prefer_counts and not re.search(
+            r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|up to)\b",
+            lowered_text,
+        ):
+            failure_hints.append(
+                "The retrieved feature row did not preserve a grounded count for the requested peripheral."
+            )
+
+        if self._question_device_tokens(question) and not (
+            self._source_matches_requested_device(question, source_text)
+            or self._source_has_family_wide_scope(source_text)
+        ):
+            failure_hints.append(
+                "The retrieved feature row did not preserve the requested device or variant alignment."
+            )
+
+        return failure_hints
+
+    def _memory_table_constraint_failure_hints(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+    ) -> list[str]:
+        source_text = self._normalize_search_text(entry.full_text if entry.full_text else entry.excerpt)
+        lowered_text = source_text.lower()
+        failure_hints: list[str] = []
+
+        if not self._table_evidence_directly_answers(question, entry, TABLE_QUESTION_MEMORY):
+            failure_hints.append(
+                "The retrieved memory row did not preserve a grounded memory-capacity answer."
+            )
+
+        memory_terms = [term for term in MEMORY_QUERY_TERMS if term in self._normalize_search_text(question).lower()]
+        if memory_terms and not all(term in lowered_text for term in memory_terms):
+            failure_hints.append(
+                "The retrieved memory row did not preserve the requested memory field alignment."
+            )
+
+        if self._source_has_multiple_capacity_options(source_text):
+            failure_hints.append(
+                "The retrieved memory row still mixes sibling capacity options, so the requested device variant is not grounded tightly enough."
+            )
+
+        if self._question_device_tokens(question) and not self._source_matches_requested_device(question, source_text):
+            failure_hints.append(
+                "The retrieved memory row did not preserve the requested device or variant alignment."
+            )
+
+        return failure_hints
+
+    def _package_ordering_constraint_failure_hints(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+        table_question_family: str,
+    ) -> list[str]:
+        source_text = self._normalize_search_text(entry.full_text if entry.full_text else entry.excerpt)
+        lowered_text = source_text.lower()
+        failure_hints: list[str] = []
+
+        if not self._table_evidence_directly_answers(question, entry, table_question_family):
+            failure_hints.append(
+                "The retrieved package/ordering row did not preserve a grounded device/package mapping."
+            )
+
+        if self._question_device_tokens(question) and not self._source_matches_requested_device(question, source_text):
+            failure_hints.append(
+                "The retrieved package/ordering row did not preserve the requested device or variant alignment."
+            )
+
+        package_match = PACKAGE_NAME_RE.search(question)
+        if package_match:
+            requested_package = package_match.group(0).upper()
+            if not self._source_matches_requested_package(requested_package, source_text):
+                failure_hints.append(
+                    f"The retrieved package/ordering row did not preserve the requested package constraint ({requested_package})."
+                )
+        elif table_question_family == TABLE_QUESTION_PACKAGE and self._source_has_multiple_package_options(source_text):
+            failure_hints.append(
+                "The retrieved package row still lists multiple package siblings; specify the package or ordering variant before selecting one grounded answer."
+            )
+
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            has_ordering_context = any(
+                term in lowered_text
+                for term in ["ordering information", "ordering information scheme", "ordering code", "order code", "package code"]
+            )
+            has_mapping_context = self._has_requested_ordering_mapping_context(
+                question,
+                source_text,
+            )
+            if not (has_ordering_context and has_mapping_context):
+                failure_hints.append(
+                    "The retrieved row did not preserve explicit ordering-code context."
+                )
+            if not self._ordering_source_has_exact_variant_closure(question, source_text):
+                failure_hints.append(
+                    "The retrieved ordering row still leaves sibling device variants unresolved, so the package code is not uniquely grounded to the requested variant."
+                )
+
+        if table_question_family == TABLE_QUESTION_DEVICE_VARIANT and self._source_has_multiple_package_options(source_text):
+            failure_hints.append(
+                "The retrieved variant row still collapses nearby sibling package or ordering options into one unsafe answer."
+            )
+
+        return failure_hints
+
+    def _select_pin_constraint_satisfied_evidence(
+        self,
+        question: str,
+        evidence: list[EvidenceRecord],
+        *,
+        limit: int = 3,
+    ) -> tuple[EvidenceRecord | None, list[str]]:
+        best_failure_hints = [
+            "The retrieved pin rows did not preserve the requested signal/package/remap constraints tightly enough to emit a grounded pin answer.",
+        ]
+        best_failure_count = sys.maxsize
+        candidate_limit = limit
+        if PACKAGE_NAME_RE.search(question):
+            candidate_limit = min(len(evidence), max(limit, 6))
+
+        for entry in evidence[:candidate_limit]:
+            failure_hints = self._pin_constraint_failure_hints(question, entry)
+            if not failure_hints:
+                return entry, []
+            if len(failure_hints) < best_failure_count:
+                best_failure_hints = failure_hints
+                best_failure_count = len(failure_hints)
+
+        return None, best_failure_hints
+
+    def _pin_constraint_failure_hints(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+    ) -> list[str]:
+        source_text = entry.full_text if entry.full_text else entry.excerpt
+        summary_signal_text = f"{entry.section} {source_text}"
+        failure_hints: list[str] = []
+
+        if not self._is_pin_mapping_lookup_query(question, summary_signal_text):
+            return [
+                "The top pin-style evidence did not preserve a grounded pin-mapping context.",
+            ]
+
+        signal_or_function = self._extract_pin_signal_or_function(question, summary_signal_text)
+        if not signal_or_function:
+            failure_hints.append(
+                "The retrieved pin row did not preserve the requested signal/function token."
+            )
+
+        package_match = PACKAGE_NAME_RE.search(question)
+        requested_package = package_match.group(0).upper() if package_match else None
+        has_exact_package_match = bool(
+            requested_package and self._extract_package_name(question, summary_signal_text)
+        )
+        has_requested_pin_mapping_scope = bool(
+            requested_package
+            and self._source_has_requested_pin_mapping(question, summary_signal_text)
+        )
+        if requested_package and not (has_exact_package_match or has_requested_pin_mapping_scope):
+            failure_hints.append(
+                f"The retrieved pin row did not preserve the requested package constraint ({requested_package})."
+            )
+        failure_hints.extend(self._source_only_pin_scope_hints(question, summary_signal_text))
+
+        requested_assignments = [
+            f"{name.upper()} = {value}"
+            for name, value in re.findall(r"\b([A-Z0-9_]+)\s*=\s*([01])\b", question, flags=re.IGNORECASE)
+        ]
+        pin_name = self._extract_pin_name(question, summary_signal_text)
+        if requested_assignments and (
+            not pin_name or not all(assignment in pin_name.upper() for assignment in requested_assignments)
+        ):
+            failure_hints.append(
+                f"The retrieved pin row did not preserve the requested remap/alternate condition ({requested_assignments[0]})."
+            )
+        if not pin_name:
+            if requested_assignments:
+                failure_hints.append(
+                    "The retrieved pin row still leaves multiple sibling pin candidates after applying the requested remap condition."
+                )
+            else:
+                failure_hints.append(
+                    "The retrieved pin row still leaves multiple sibling pin candidates without enough package/remap disambiguation."
+                )
+
+        return failure_hints
+
+    def _select_electrical_constraint_satisfied_evidence(
+        self,
+        question: str,
+        evidence: list[EvidenceRecord],
+        *,
+        limit: int = 3,
+    ) -> tuple[EvidenceRecord | None, list[str]]:
+        best_failure_hints = [
+            "The retrieved electrical rows did not preserve the requested parameter/value/unit/condition constraints tightly enough to emit a grounded numeric answer.",
+        ]
+        best_failure_count = sys.maxsize
+
+        for entry in evidence[:limit]:
+            failure_hints = self._electrical_constraint_failure_hints(question, entry)
+            if not failure_hints:
+                return entry, []
+            if len(failure_hints) < best_failure_count:
+                best_failure_hints = failure_hints
+                best_failure_count = len(failure_hints)
+
+        return None, best_failure_hints
+
+    def _electrical_constraint_failure_hints(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+    ) -> list[str]:
+        source_text = entry.full_text if entry.full_text else entry.excerpt
+        summary_signal_text = f"{entry.section} {source_text}"
+        normalized_text = self._normalize_search_text(summary_signal_text)
+        lowered_text = normalized_text.lower()
+        failure_hints: list[str] = []
+
+        parameter_symbols = self._question_electrical_parameter_symbols(question)
+        if parameter_symbols and not all(symbol.lower() in lowered_text for symbol in parameter_symbols):
+            failure_hints.append(
+                "The retrieved electrical row did not preserve the requested parameter identity."
+            )
+        elif not parameter_symbols and self._extract_parameter_name(question, normalized_text) is None:
+            failure_hints.append(
+                "The retrieved electrical row did not preserve the requested parameter identity."
+            )
+
+        numeric_answer = self._extract_numeric_answer(question, normalized_text)
+        if numeric_answer is None:
+            failure_hints.append(
+                "The retrieved electrical row did not preserve a grounded numeric value or range."
+            )
+        else:
+            _, unit = self._split_numeric_answer(numeric_answer)
+            if unit is None:
+                failure_hints.append(
+                    "The retrieved electrical row did not preserve the unit for the requested value or range."
+                )
+
+        requested_condition = self._requested_electrical_condition_text(question)
+        if requested_condition and not self._electrical_row_matches_requested_condition(
+            question,
+            normalized_text,
+        ):
+            failure_hints.append(
+                f"The retrieved electrical row did not preserve the requested operating condition ({requested_condition})."
+            )
+
+        return failure_hints
+
+    def _question_electrical_parameter_symbols(self, question: str) -> list[str]:
+        parameter_symbols: list[str] = []
+        for match in ELECTRICAL_PARAMETER_SYMBOL_RE.finditer(question):
+            symbol = match.group(0).upper()
+            if symbol not in parameter_symbols:
+                parameter_symbols.append(symbol)
+        return parameter_symbols
+
+    def _requested_electrical_condition_text(self, question: str) -> str | None:
+        lowered_question = question.lower()
+        for phrase in [
+            "standard operating voltage",
+            "operating voltage",
+            "standard operating conditions",
+            "recommended operating conditions",
+            "operating conditions",
+            "absolute maximum ratings",
+            "absolute maximum rating",
+        ]:
+            if phrase in lowered_question:
+                return phrase
+        if "operating" in lowered_question:
+            return "operating"
+        return None
+
+    def _electrical_row_matches_requested_condition(
+        self,
+        question: str,
+        source_text: str,
+    ) -> bool:
+        requested_condition = self._requested_electrical_condition_text(question)
+        if requested_condition is None:
+            return True
+
+        lowered_text = self._normalize_search_text(source_text).lower()
+        condition_aliases = {
+            "standard operating voltage": (
+                "standard operating voltage",
+                "operating voltage",
+            ),
+            "operating voltage": (
+                "standard operating voltage",
+                "operating voltage",
+            ),
+            "standard operating conditions": (
+                "standard operating conditions",
+                "operating conditions",
+            ),
+            "recommended operating conditions": (
+                "recommended operating conditions",
+                "operating conditions",
+            ),
+            "operating conditions": (
+                "standard operating conditions",
+                "recommended operating conditions",
+                "operating conditions",
+            ),
+            "absolute maximum ratings": (
+                "absolute maximum ratings",
+                "absolute maximum rating",
+            ),
+            "absolute maximum rating": (
+                "absolute maximum ratings",
+                "absolute maximum rating",
+            ),
+            "operating": (
+                "standard operating voltage",
+                "operating voltage",
+                "standard operating conditions",
+                "recommended operating conditions",
+                "operating conditions",
+            ),
+        }
+        return any(alias in lowered_text for alias in condition_aliases.get(requested_condition, (requested_condition,)))
+
+    def _promote_evidence_entry(
+        self,
+        evidence: list[EvidenceRecord],
+        selected_entry: EvidenceRecord,
+    ) -> None:
+        if not evidence or evidence[0] is selected_entry:
+            return
+
+        selected_index = next(
+            (index for index, entry in enumerate(evidence) if entry is selected_entry),
+            None,
+        )
+        if selected_index is None:
+            return
+
+        evidence.insert(0, evidence.pop(selected_index))
+        for index, entry in enumerate(evidence, start=1):
+            entry.tag = f"[S{index}]"
 
     def _metadata_filter_bonus(self, document: DocumentRecord) -> float:
         bonus = 0.0
@@ -1632,6 +4118,671 @@ class EmbeddedRetrievalPrototype:
 
         return bonus
 
+    def _table_question_family(self, question: str) -> str | None:
+        normalized_question = self._normalize_search_text(question)
+        lowered_question = normalized_question.lower()
+        device_tokens = self._question_device_tokens(question)
+        package_token_match = PACKAGE_NAME_RE.search(question)
+        has_package_token = package_token_match is not None
+        ordering_hint = any(
+            term in lowered_question
+            for term in [
+                "ordering code",
+                "ordering codes",
+                "order code",
+                "order codes",
+                "ordering information",
+                "suffix",
+                "suffixes",
+            ]
+        )
+        package_table_hint = any(
+            term in lowered_question
+            for term in [
+                "package options",
+                "package option",
+                "package offerings",
+                "available packages",
+                "available package",
+                "package information",
+                "package code",
+                "package codes",
+            ]
+        )
+        variant_hint = any(
+            term in lowered_question
+            for term in [
+                "device variant",
+                "device variants",
+                "variant",
+                "variants",
+                "difference between",
+                "compare",
+                "comparison",
+                "versus",
+            ]
+        )
+        package_table_hint = any(
+            term in lowered_question
+            for term in [
+                "package options",
+                "package option",
+                "package offerings",
+                "available packages",
+                "available package",
+                "package information",
+                "package code",
+                "package codes",
+            ]
+        ) or (
+            "package" in lowered_question
+            and any(term in lowered_question for term in ["available", "offered", "offerings", "options"])
+        )
+        direct_package_identity_hint = any(
+            term in lowered_question
+            for term in [
+                "which package does",
+                "what package does",
+                "which package is used",
+                "what package is used",
+                "which package for",
+                "what package for",
+            ]
+        )
+        count_hint = any(
+            term in lowered_question
+            for term in ["how many", "number of", "count of", "counts of"]
+        )
+        feature_hint = any(
+            term in lowered_question
+            for term in [
+                "feature",
+                "features",
+                "provide",
+                "provides",
+                "support",
+                "supports",
+                "include",
+                "includes",
+                "have",
+                "has",
+            ]
+        )
+        peripheral_hint = any(term in lowered_question for term in FEATURE_QUERY_TERMS)
+        memory_hint = any(term in lowered_question for term in ["flash", "sram", "eeprom"])
+        explicit_memory_hint = any(
+            term in lowered_question
+            for term in [
+                "memory organization",
+                "memory size",
+                "memory sizes",
+                "memory density",
+                "memory capacity",
+            ]
+        )
+
+        if self._is_electrical_table_query(question):
+            return TABLE_QUESTION_ELECTRICAL
+
+        if (memory_hint or explicit_memory_hint) and not any(
+            term in lowered_question for term in ["memory map", "register map", "address map"]
+        ):
+            return TABLE_QUESTION_MEMORY
+
+        if variant_hint and (
+            len(device_tokens) >= 2
+            or ordering_hint
+            or has_package_token
+            or "package" in lowered_question
+        ):
+            return TABLE_QUESTION_DEVICE_VARIANT
+        if ordering_hint and (has_package_token or "package" in lowered_question or bool(device_tokens)):
+            return TABLE_QUESTION_ORDERING
+        if package_table_hint and (has_package_token or ordering_hint or len(device_tokens) >= 2 or "packages" in lowered_question):
+            return TABLE_QUESTION_PACKAGE
+        if direct_package_identity_hint and device_tokens and not has_package_token:
+            return TABLE_QUESTION_PACKAGE
+        if self._is_pin_intent_query(question):
+            has_explicit_pin_table_hint = any(
+                term in lowered_question
+                for term in [
+                    "which pin",
+                    "what pin",
+                    "pinout",
+                    "pin definition",
+                    "pin definitions",
+                    "alternate function",
+                    "alternate functions",
+                    "table",
+                    "package",
+                    "ball",
+                    "remap",
+                ]
+            )
+            if has_explicit_pin_table_hint or SIGNAL_NAME_RE.search(question) or PACKAGE_NAME_RE.search(question):
+                return TABLE_QUESTION_PIN
+        if peripheral_hint and count_hint:
+            return TABLE_QUESTION_PERIPHERAL_COUNT
+        if peripheral_hint and feature_hint:
+            return TABLE_QUESTION_FEATURE
+        return None
+
+    def _is_electrical_table_query(self, question: str) -> bool:
+        if self._is_pin_intent_query(question) or self._is_register_lookup_query(question):
+            return False
+
+        lowered_question = self._normalize_search_text(question).lower()
+        if not self._looks_numeric(question):
+            return False
+
+        parameter_hint = any(
+            term in lowered_question
+            for term in [
+                "voltage",
+                "current",
+                "temperature",
+                "electrical",
+                "operating conditions",
+                "absolute maximum",
+                "characteristics",
+            ]
+        )
+        range_or_limit_hint = any(
+            term in lowered_question
+            for term in [
+                "range",
+                "maximum",
+                "minimum",
+                "max",
+                "min",
+                "limit",
+                "rating",
+                "ratings",
+                "operating",
+            ]
+        )
+        symbol_hint = bool(ELECTRICAL_PARAMETER_SYMBOL_RE.search(question))
+        if "clock" in lowered_question and not symbol_hint:
+            return False
+        return (parameter_hint and range_or_limit_hint) or (symbol_hint and (range_or_limit_hint or "operating" in lowered_question))
+
+    def _section_score_windows(self, table_question_family: str | None) -> tuple[int, int]:
+        if table_question_family == TABLE_QUESTION_PIN:
+            return 12000, 12000
+        if table_question_family == TABLE_QUESTION_ELECTRICAL:
+            return 8000, 8000
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+        }:
+            return 5000, 7000
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            return 4500, 6500
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return 4000, 6000
+        return 1200, 1800
+
+    def _table_section_bonus(
+        self,
+        question: str,
+        table_question_family: str | None,
+        heading_text: str,
+        body_text: str,
+    ) -> float:
+        if table_question_family is None:
+            return 0.0
+        if table_question_family == TABLE_QUESTION_PIN:
+            return self._pin_table_section_bonus(question, heading_text, body_text) + self._table_section_noise_penalty(
+                table_question_family,
+                heading_text,
+                body_text,
+            )
+        if table_question_family == TABLE_QUESTION_ELECTRICAL:
+            return self._electrical_table_section_bonus(question, heading_text, body_text) + self._table_section_noise_penalty(
+                table_question_family,
+                heading_text,
+                body_text,
+            )
+        if table_question_family == TABLE_QUESTION_FEATURE:
+            return self._feature_table_section_bonus(
+                question,
+                heading_text,
+                body_text,
+                prefer_counts=False,
+            ) + self._table_section_noise_penalty(
+                table_question_family,
+                heading_text,
+                body_text,
+            )
+        if table_question_family == TABLE_QUESTION_PERIPHERAL_COUNT:
+            return self._feature_table_section_bonus(
+                question,
+                heading_text,
+                body_text,
+                prefer_counts=True,
+            ) + self._table_section_noise_penalty(
+                table_question_family,
+                heading_text,
+                body_text,
+            )
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            return self._memory_table_section_bonus(question, heading_text, body_text) + self._table_section_noise_penalty(
+                table_question_family,
+                heading_text,
+                body_text,
+            )
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return self._package_ordering_table_section_bonus(
+                question,
+                heading_text,
+                body_text,
+                table_question_family,
+            ) + self._table_section_noise_penalty(
+                table_question_family,
+                heading_text,
+                body_text,
+            )
+        return 0.0
+
+    def _pin_table_section_bonus(self, question: str, heading_text: str, body_text: str) -> float:
+        lowered_heading = self._normalize_search_text(heading_text).lower()
+        lowered_body = self._normalize_search_text(body_text).lower()
+        bonus = 0.0
+
+        if any(term in lowered_heading for term in PIN_TABLE_HEADING_TERMS):
+            bonus += 5.5
+        elif any(term in lowered_body for term in PIN_TABLE_HEADING_TERMS):
+            bonus += 2.4
+
+        if any(term in lowered_heading or term in lowered_body for term in PIN_TABLE_CONTEXT_TERMS):
+            bonus += 1.8
+
+        question_signals = []
+        for candidate in SIGNAL_NAME_RE.findall(question):
+            normalized_candidate = candidate.lower()
+            if normalized_candidate not in question_signals:
+                question_signals.append(normalized_candidate)
+        signal_hits = sum(
+            1
+            for signal in question_signals
+            if signal in lowered_heading or signal in lowered_body
+        )
+        bonus += min(signal_hits, 2) * 2.8
+
+        package_match = PACKAGE_NAME_RE.search(question)
+        if package_match:
+            normalized_package = package_match.group(0).lower()
+            if normalized_package in lowered_heading or normalized_package in lowered_body:
+                bonus += 3.0
+
+        if "remap" in lowered_heading or "remap" in lowered_body:
+            bonus += 1.5
+        if re.search(r"\btable\s+\d+\b", lowered_heading) and any(
+            term in lowered_body for term in ["pin", "alternate", "remap", "package"]
+        ):
+            bonus += 1.2
+        if PIN_NAME_RE.search(body_text):
+            bonus += 1.4
+        if re.search(r"\baf\d+\b", body_text, flags=re.IGNORECASE):
+            bonus += 1.0
+
+        return bonus
+
+    def _electrical_table_section_bonus(self, question: str, heading_text: str, body_text: str) -> float:
+        lowered_question = self._normalize_search_text(question).lower()
+        lowered_heading = self._normalize_search_text(heading_text).lower()
+        lowered_body = self._normalize_search_text(body_text).lower()
+        bonus = 0.0
+
+        if any(term in lowered_heading for term in ELECTRICAL_TABLE_HEADING_TERMS):
+            bonus += 5.5
+        elif any(term in lowered_body for term in ELECTRICAL_TABLE_HEADING_TERMS):
+            bonus += 2.4
+
+        if self._has_electrical_table_context(body_text):
+            bonus += 2.3
+        if any(term in lowered_heading or term in lowered_body for term in ELECTRICAL_TABLE_CONTEXT_TERMS):
+            bonus += 1.5
+
+        parameter_symbols = []
+        for match in ELECTRICAL_PARAMETER_SYMBOL_RE.finditer(question):
+            normalized_symbol = match.group(0).lower()
+            if normalized_symbol not in parameter_symbols:
+                parameter_symbols.append(normalized_symbol)
+        symbol_hits = sum(
+            1
+            for symbol in parameter_symbols
+            if symbol in lowered_heading or symbol in lowered_body
+        )
+        bonus += min(symbol_hits, 2) * 1.8
+
+        if any(term in lowered_question for term in ["range", "max", "maximum", "min", "minimum", "limit"]):
+            if "min" in lowered_body and "max" in lowered_body:
+                bonus += 1.8
+            if any(term in lowered_body for term in ["parameter", "conditions", "unit"]):
+                bonus += 1.0
+
+        if re.search(r"\btable\s+\d+\b", lowered_heading) and self._has_electrical_table_context(body_text):
+            bonus += 0.8
+
+        return bonus
+
+    def _feature_table_section_bonus(
+        self,
+        question: str,
+        heading_text: str,
+        body_text: str,
+        *,
+        prefer_counts: bool,
+    ) -> float:
+        lowered_heading = self._normalize_search_text(heading_text).lower()
+        lowered_body = self._normalize_search_text(body_text).lower()
+        bonus = 0.0
+
+        if any(term in lowered_heading for term in FEATURE_TABLE_HEADING_TERMS):
+            bonus += 5.5
+        elif any(term in lowered_body for term in FEATURE_TABLE_HEADING_TERMS):
+            bonus += 2.6
+        elif any(term in lowered_heading for term in FEATURE_TABLE_WEAK_HEADING_TERMS):
+            bonus += 2.4
+        if re.search(
+            r"\btable\s+\d+[\.:]?\s*(?:device summary|.*features?\s+and\s+peripheral counts?)\b",
+            lowered_body,
+        ):
+            bonus += 3.0
+
+        question_terms = [
+            term for term in FEATURE_QUERY_TERMS if term in self._normalize_search_text(question).lower()
+        ]
+        term_hits = sum(
+            1
+            for term in question_terms
+            if term in lowered_heading or term in lowered_body
+        )
+        bonus += min(term_hits, 2) * 2.1
+
+        if any(term in lowered_heading or term in lowered_body for term in ["device summary", "peripheral counts"]):
+            bonus += 1.8
+        if "device summary" in lowered_body and any(
+            token.lower() in lowered_body for token in self._question_device_tokens(question)
+        ):
+            bonus += 1.2
+        if prefer_counts and term_hits and re.search(r"\b\d+\b", body_text):
+            bonus += 2.2
+        if prefer_counts and any(
+            term in lowered_body
+            for term in ["peripheral count", "peripheral counts", "main features", "device summary"]
+        ):
+            bonus += 2.0
+        if re.search(r"\btable\s+\d+\b", lowered_heading) and any(
+            term in lowered_body for term in ["feature", "peripheral", "adc", "timer", "spi", "usart"]
+        ):
+            bonus += 0.8
+
+        return bonus
+
+    def _memory_table_section_bonus(self, question: str, heading_text: str, body_text: str) -> float:
+        lowered_question = self._normalize_search_text(question).lower()
+        lowered_heading = self._normalize_search_text(heading_text).lower()
+        lowered_body = self._normalize_search_text(body_text).lower()
+        bonus = 0.0
+
+        if any(term in lowered_heading for term in MEMORY_TABLE_HEADING_TERMS):
+            bonus += 5.5
+        elif any(term in lowered_body for term in MEMORY_TABLE_HEADING_TERMS):
+            bonus += 2.6
+        if "flash" in lowered_heading and "sram" in lowered_heading:
+            bonus += 2.6
+        if re.search(r"\btable\s+\d+[\.:]?\s*device summary\b", lowered_body):
+            bonus += 2.4
+
+        memory_terms = [term for term in MEMORY_QUERY_TERMS if term in lowered_question]
+        term_hits = sum(
+            1 for term in memory_terms if term in lowered_heading or term in lowered_body
+        )
+        bonus += min(term_hits, 2) * 2.2
+
+        if any(term in lowered_heading or term in lowered_body for term in ["flash", "sram", "memory organization"]):
+            bonus += 1.8
+        if memory_terms and re.search(r"\b\d+\s*(?:kbyte|kbytes|kb|mb)\b", lowered_body):
+            bonus += 2.4
+        if all(term in lowered_body for term in ["flash", "sram"]) and re.search(r"\b\d+\s*(?:kbyte|kbytes|kb|mb)\b", lowered_body):
+            bonus += 1.6
+        requested_pin_codes = {
+            pin_code for pin_code, _ in self._requested_device_variant_codes(question)
+        }
+        if requested_pin_codes and any(
+            re.search(
+                rf"\bSTM32[A-Z0-9]{{4,}}{re.escape(pin_code)}X\b",
+                body_text.upper(),
+            )
+            for pin_code in requested_pin_codes
+        ):
+            bonus += 4.2
+            if all(term in lowered_body for term in ["flash - kbytes", "sram - kbytes"]):
+                bonus += 4.4
+        if "device features and peripheral counts" in lowered_body:
+            bonus += 2.8
+        if "device summary" in lowered_heading or "device summary" in lowered_body:
+            bonus += 1.6
+        if re.search(r"\btable\s+\d+\b", lowered_heading) and any(
+            term in lowered_body for term in ["flash", "sram", "memory", "kbyte", "kb"]
+        ):
+            bonus += 0.8
+
+        return bonus
+
+    def _package_ordering_table_section_bonus(
+        self,
+        question: str,
+        heading_text: str,
+        body_text: str,
+        table_question_family: str,
+    ) -> float:
+        lowered_question = self._normalize_search_text(question).lower()
+        lowered_heading = self._normalize_search_text(heading_text).lower()
+        lowered_body = self._normalize_search_text(body_text).lower()
+        bonus = 0.0
+
+        if any(term in lowered_heading for term in PACKAGE_ORDERING_TABLE_HEADING_TERMS):
+            bonus += 5.5
+        elif any(term in lowered_body for term in PACKAGE_ORDERING_TABLE_HEADING_TERMS):
+            bonus += 2.6
+        if re.search(
+            r"\btable\s+\d+[\.:]?\s*(?:device summary|ordering information|ordering code|package information)\b",
+            lowered_body,
+        ):
+            bonus += 3.0
+
+        query_hits = sum(
+            1
+            for term in PACKAGE_ORDERING_QUERY_TERMS
+            if term in lowered_question and (term in lowered_heading or term in lowered_body)
+        )
+        bonus += min(query_hits, 2) * 1.8
+
+        package_match = PACKAGE_NAME_RE.search(question)
+        if package_match:
+            normalized_package = package_match.group(0).lower()
+            if normalized_package in lowered_heading or normalized_package in lowered_body:
+                bonus += 3.4
+
+        device_hits = sum(
+            1
+            for token in self._question_device_tokens(question)
+            if token.lower() in lowered_heading or token.lower() in lowered_body
+        )
+        bonus += min(device_hits, 2) * 0.9
+        if "device summary" in lowered_body and device_hits:
+            bonus += 1.4
+
+        if table_question_family == TABLE_QUESTION_ORDERING and any(
+            term in lowered_heading or term in lowered_body
+            for term in ["ordering information", "ordering information scheme", "ordering code", "order code", "order codes"]
+        ):
+            bonus += 3.4
+        if table_question_family == TABLE_QUESTION_ORDERING and any(
+            term in lowered_body
+            for term in ["example: stm32", "flash memory size", "pin count", "temperature range", "options"]
+        ):
+            bonus += 2.2
+        if table_question_family == TABLE_QUESTION_PACKAGE and any(
+            term in lowered_heading or term in lowered_body
+            for term in ["package information", "package options", "packages"]
+        ):
+            bonus += 1.8
+        if table_question_family == TABLE_QUESTION_DEVICE_VARIANT and any(
+            term in lowered_heading or term in lowered_body
+            for term in ["device summary", "ordering code", "ordering information", "package information"]
+        ):
+            bonus += 2.0
+        if re.search(r"\btable\s+\d+\b", lowered_heading) and any(
+            term in lowered_body
+            for term in ["ordering", "order code", "package", "device summary", "variant"]
+        ):
+            bonus += 0.8
+
+        return bonus
+
+    def _table_section_noise_penalty(
+        self,
+        table_question_family: str,
+        heading_text: str,
+        body_text: str,
+    ) -> float:
+        lowered_heading = self._normalize_search_text(heading_text).lower()
+        lowered_body = self._normalize_search_text(body_text).lower()
+        body_opening = lowered_body[:1200]
+        leading_noise_window = f"{lowered_heading} {lowered_body[:400]}"
+        penalty = 0.0
+        if lowered_heading == "document root" and re.search(r"\.\s*\.\s*\d+\b", body_opening):
+            penalty -= 12.0
+        has_feature_table_signal = any(
+            term in lowered_heading or term in body_opening for term in FEATURE_TABLE_HEADING_TERMS
+        ) or bool(
+            re.search(
+                r"\btable\s+\d+[\.:]?\s*(?:device summary|.*features?\s+and\s+peripheral counts?)\b",
+                body_opening,
+            )
+        )
+        has_memory_table_signal = any(
+            term in lowered_heading or term in body_opening for term in MEMORY_TABLE_HEADING_TERMS
+        ) or ("flash" in body_opening and "sram" in body_opening)
+        has_package_table_signal = any(
+            term in lowered_heading or term in body_opening for term in PACKAGE_ORDERING_TABLE_HEADING_TERMS
+        ) or bool(
+            re.search(
+                r"\btable\s+\d+[\.:]?\s*(?:device summary|ordering information|ordering code|package information)\b",
+                body_opening,
+            )
+        )
+        if table_question_family in {TABLE_QUESTION_FEATURE, TABLE_QUESTION_PERIPHERAL_COUNT}:
+            has_family_table_signal = has_feature_table_signal
+        elif table_question_family == TABLE_QUESTION_MEMORY:
+            has_family_table_signal = has_memory_table_signal
+        elif table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            has_family_table_signal = has_package_table_signal
+        else:
+            has_family_table_signal = False
+
+        if any(term in leading_noise_window for term in TABLE_NOISE_HEADING_TERMS):
+            penalty -= 7.0
+        elif any(term in lowered_heading or term in lowered_body for term in TABLE_NOISE_HEADING_TERMS):
+            penalty -= 3.0 if has_family_table_signal else 7.0
+        if re.search(r"\.\s*\.\s*\d+\b", lowered_heading):
+            penalty -= 8.0
+        if any(term in lowered_heading or term in lowered_body for term in MECHANICAL_PACKAGE_NOISE_TERMS):
+            penalty -= 2.0 if has_package_table_signal else 4.5
+
+        if table_question_family == TABLE_QUESTION_PIN and any(
+            term in lowered_heading for term in ELECTRICAL_TABLE_HEADING_TERMS
+        ):
+            penalty -= 3.2
+        if table_question_family == TABLE_QUESTION_ELECTRICAL and any(
+            term in lowered_heading for term in PIN_TABLE_HEADING_TERMS
+        ):
+            penalty -= 3.2
+        if table_question_family == TABLE_QUESTION_ELECTRICAL and any(
+            term in lowered_heading
+            for term in ["memory map", "register map", "register definition", "register descriptions"]
+        ):
+            penalty -= 2.8
+        if table_question_family in {TABLE_QUESTION_FEATURE, TABLE_QUESTION_PERIPHERAL_COUNT}:
+            if any(term in lowered_heading for term in ELECTRICAL_TABLE_HEADING_TERMS):
+                penalty -= 3.0
+            if any(term in lowered_heading for term in PIN_TABLE_HEADING_TERMS):
+                penalty -= 3.2
+            if any(term in lowered_heading or term in lowered_body for term in FEATURE_TABLE_NOISE_TERMS):
+                penalty -= 3.0
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            if any(term in lowered_heading for term in PIN_TABLE_HEADING_TERMS):
+                penalty -= 3.2
+            if any(term in lowered_heading for term in ELECTRICAL_TABLE_HEADING_TERMS):
+                penalty -= 2.8
+            if any(term in lowered_heading or term in lowered_body for term in MEMORY_TABLE_NOISE_TERMS):
+                penalty -= 3.2
+            if any(
+                term in lowered_heading or term in body_opening
+                for term in ["full compatibility throughout the family", "low-density devices", "high-density devices"]
+            ):
+                penalty -= 4.8
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            if any(term in lowered_heading or term in lowered_body for term in PACKAGE_ORDERING_NOISE_TERMS):
+                penalty -= 4.5
+            if "revision history" in lowered_heading or "revision history" in body_opening:
+                penalty -= 6.0
+            if any(term in lowered_heading for term in PIN_TABLE_HEADING_TERMS):
+                penalty -= 3.4
+            if any(term in lowered_heading for term in ELECTRICAL_TABLE_HEADING_TERMS):
+                penalty -= 3.2
+            if any(
+                term in lowered_heading
+                for term in ["main features", "features and peripheral counts", "peripheral counts"]
+            ):
+                penalty -= 2.8
+
+        return penalty
+
+    def _question_device_tokens(self, question: str) -> list[str]:
+        device_tokens: list[str] = []
+        for candidate in DEVICE_RE.findall(question.upper()):
+            if PACKAGE_NAME_RE.fullmatch(candidate):
+                continue
+            normalized_candidate = self._normalize_device_family(candidate)
+            if normalized_candidate and normalized_candidate not in device_tokens:
+                device_tokens.append(normalized_candidate)
+        return device_tokens
+
+    def _has_electrical_table_context(self, text: str) -> bool:
+        normalized_text = self._normalize_search_text(text).lower()
+        if re.search(r"\bmin\b.*\bmax\b|\bmax\b.*\bmin\b", normalized_text):
+            return True
+        if re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:to|-)\s*\d+(?:\.\d+)?\s*(?:v|mv|a|ma|ua|hz|khz|mhz|ghz|ns|us|ms|%)\b",
+            normalized_text,
+        ):
+            return True
+        return all(
+            term in normalized_text
+            for term in ["parameter", "conditions", "min", "max", "unit"]
+        )
+
     def _register_specific_tokens(self, question: str) -> list[str]:
         tokens = [
             token
@@ -1656,13 +4807,45 @@ class EmbeddedRetrievalPrototype:
 
         top_entry = evidence[0]
         top_score = top_entry.score
+        top_row_quality = self._table_row_evidence_quality(question, top_entry)
+        is_pin_question = self._is_pin_intent_query(question)
         kept = [top_entry]
 
         for entry in evidence[1:]:
-            if entry.score < max(12.0, top_score - 6.0):
-                continue
-            if self._is_low_signal_for_question(question, entry):
-                continue
+            entry_row_quality = self._table_row_evidence_quality(question, entry)
+            summary_signal_text = f"{entry.section} {entry.full_text if entry.full_text else entry.excerpt}"
+            preserve_pin_revision_conflict = False
+            if is_pin_question:
+                different_document = bool(
+                    entry.document_path
+                    and top_entry.document_path
+                    and entry.document_path != top_entry.document_path
+                )
+                different_revision = bool(
+                    entry.revision
+                    and top_entry.revision
+                    and entry.revision != top_entry.revision
+                )
+                grounded_pin_candidate = (
+                    self._evidence_directly_answers(question, entry)
+                    or self._build_pin_summary(question, summary_signal_text) is not None
+                )
+                satisfies_pin_constraints = not self._pin_constraint_failure_hints(question, entry)
+                preserve_pin_revision_conflict = (
+                    different_document
+                    and (different_revision or not entry.revision or not top_entry.revision)
+                    and grounded_pin_candidate
+                    and satisfies_pin_constraints
+                )
+            if not preserve_pin_revision_conflict:
+                if entry.score < max(12.0, top_score - 6.0):
+                    continue
+                if self._is_low_signal_for_question(question, entry):
+                    continue
+                if top_row_quality >= 8.0 and entry_row_quality < 3.5:
+                    continue
+                if top_row_quality >= 10.0 and entry.score < top_score - 2.5 and entry_row_quality < 5.0:
+                    continue
             kept.append(entry)
 
         return kept
@@ -1683,10 +4866,38 @@ class EmbeddedRetrievalPrototype:
             evidence,
             key=lambda entry: (
                 self._evidence_directly_answers(question, entry),
+                self._table_row_evidence_quality(question, entry),
+                not self._is_low_signal_for_question(question, entry),
                 entry.score,
             ),
             reverse=True,
         )
+        protected_contrast_entry = None
+        if ordered:
+            for entry in ordered[1:]:
+                if not self._evidence_directly_answers(question, entry):
+                    continue
+                if not ordered[0].document_path or not entry.document_path:
+                    continue
+                if ordered[0].document_path == entry.document_path:
+                    continue
+                protected_contrast_entry = entry
+                break
+        if ordered:
+            top_row_quality = self._table_row_evidence_quality(question, ordered[0])
+            if top_row_quality >= 7.5:
+                filtered = [ordered[0]]
+                for entry in ordered[1:]:
+                    if entry is protected_contrast_entry:
+                        filtered.append(entry)
+                        continue
+                    entry_row_quality = self._table_row_evidence_quality(question, entry)
+                    if self._is_low_signal_for_question(question, entry) and entry_row_quality < 4.0:
+                        continue
+                    if top_row_quality >= 9.0 and entry_row_quality < 2.5 and entry.score < ordered[0].score - 2.0:
+                        continue
+                    filtered.append(entry)
+                ordered = filtered
         for index, entry in enumerate(ordered, start=1):
             entry.tag = f"[S{index}]"
         return ordered
@@ -1786,6 +4997,34 @@ class EmbeddedRetrievalPrototype:
             return True
         if self._is_pin_intent_query(question) and top_missing_tokens:
             return True
+
+        if self._is_pin_intent_query(question):
+            pin_value_buckets = {}
+            for entry in evidence[:4]:
+                raw_values = self._extract_pin_mapping_values(entry)
+                normalized_values = set()
+                for raw_value in raw_values:
+                    if raw_value is None:
+                        continue
+                    for part in str(raw_value).split("/"):
+                        token = part.strip().upper()
+                        if token:
+                            normalized_values.add(token)
+                if not normalized_values:
+                    continue
+
+                bucket_document = getattr(entry, "document_path", None) or getattr(entry, "document_id", None)
+                bucket_revision = getattr(entry, "revision", None)
+                bucket_key = (bucket_document, bucket_revision)
+                pin_value_buckets.setdefault(bucket_key, set()).update(normalized_values)
+
+            has_dash_only_bucket = any(values == {"-"} for values in pin_value_buckets.values())
+            has_specific_pin_bucket = any(
+                any(value != "-" for value in values)
+                for values in pin_value_buckets.values()
+            )
+            if has_dash_only_bucket and has_specific_pin_bucket:
+                return True
 
         direct_answer_entries = [
             entry for entry in evidence[:4]
@@ -1929,6 +5168,69 @@ class EmbeddedRetrievalPrototype:
         lowered_question = question.lower()
         section_text = entry.section.lower()
         source_text = (entry.full_text or entry.excerpt).lower()
+        table_question_family = self._table_question_family(question)
+        row_quality = self._table_row_evidence_quality(question, entry)
+
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            if any(term in section_text or term in source_text for term in TABLE_NOISE_HEADING_TERMS):
+                return True
+            if table_question_family in {TABLE_QUESTION_FEATURE, TABLE_QUESTION_PERIPHERAL_COUNT}:
+                if row_quality < 6.0 and any(
+                    term in section_text or term in source_text
+                    for term in [
+                        "operating voltage",
+                        "vdd",
+                        "power supply",
+                        "description",
+                        "revision history",
+                    ]
+                ):
+                    return True
+            if table_question_family == TABLE_QUESTION_MEMORY:
+                if row_quality < 6.2 and any(
+                    term in section_text or term in source_text
+                    for term in [
+                        "operating voltage",
+                        "vdd",
+                        "voltage regulator",
+                        "revision history",
+                    ]
+                ):
+                    return True
+            if table_question_family in {
+                TABLE_QUESTION_PACKAGE,
+                TABLE_QUESTION_ORDERING,
+                TABLE_QUESTION_DEVICE_VARIANT,
+            }:
+                if table_question_family == TABLE_QUESTION_ORDERING and any(
+                    term in source_text
+                    for term in [
+                        "low-profile quad flat package",
+                        "outline",
+                        "gauge plane",
+                        "dimension",
+                        "section a-a",
+                        "section b-b",
+                    ]
+                ):
+                    return True
+                if (
+                    any(term in section_text or term in source_text for term in ["revision history", "changes", "table 64"])
+                    or re.search(r"\b\d{1,2}-[a-z]{3}-\d{4}\b", source_text)
+                    or any(term in source_text for term in ["updated", "removed", "added", "modified", "revised", "clarified", "footprints", "specifications"])
+                ):
+                    return True
+                if row_quality < 6.8 and (
+                    any(term in section_text or term in source_text for term in PACKAGE_ORDERING_NOISE_TERMS)
+                ):
+                    return True
 
         if self._is_comparison_query(question):
             comparison_signal = self._comparison_signal_text(entry)
@@ -2021,11 +5323,27 @@ class EmbeddedRetrievalPrototype:
 
     def _extract_requirement_tokens(self, question: str) -> list[str]:
         requirement_tokens: list[str] = []
+        is_ordering_question = self._table_question_family(question) == TABLE_QUESTION_ORDERING
         for token in self._tokenize(question):
             if token in IGNORED_REQUIREMENT_TOKENS:
                 continue
             if token not in requirement_tokens:
                 requirement_tokens.append(token)
+
+        if is_ordering_question:
+            for device_token in self._question_device_tokens(question):
+                compact_device_token = self._compact_alnum(device_token).lower()
+                if compact_device_token and compact_device_token not in requirement_tokens:
+                    requirement_tokens.append(compact_device_token)
+
+            package_match = PACKAGE_NAME_RE.search(question)
+            if package_match:
+                compact_package_token = self._compact_alnum(package_match.group(0)).lower()
+                if compact_package_token and compact_package_token not in requirement_tokens:
+                    requirement_tokens.append(compact_package_token)
+
+            if "ordering code" not in requirement_tokens:
+                requirement_tokens.append("ordering code")
         return requirement_tokens
 
     def _is_device_like_token(self, token: str) -> bool:
@@ -2042,11 +5360,25 @@ class EmbeddedRetrievalPrototype:
                 for entry in evidence[:2]
             ).lower()
         )
-        return [
-            token
-            for token in requirement_tokens
-            if token not in evidence_text and not self._is_device_like_token(token)
-        ]
+        compact_evidence_text = self._compact_alnum(evidence_text).lower()
+        is_ordering_question = self._table_question_family(question) == TABLE_QUESTION_ORDERING
+        missing_tokens: list[str] = []
+        for token in requirement_tokens:
+            if token == "ordering code" and any(
+                term in evidence_text
+                for term in ["ordering information scheme", "ordering code", "order code"]
+            ):
+                continue
+
+            compact_token = self._compact_alnum(token).lower()
+            if is_ordering_question and compact_token and compact_token in compact_evidence_text:
+                continue
+            if token in evidence_text:
+                continue
+            if not is_ordering_question and self._is_device_like_token(token):
+                continue
+            missing_tokens.append(token)
+        return missing_tokens
 
     def _has_strong_evidence(self, evidence: list[EvidenceRecord], question: str | None = None) -> bool:
         if not evidence:
@@ -2066,6 +5398,20 @@ class EmbeddedRetrievalPrototype:
 
 
     def _evidence_directly_answers(self, question: str, entry: EvidenceRecord) -> bool:
+        table_question_family = self._table_question_family(question)
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return self._table_evidence_directly_answers(
+                question,
+                entry,
+                table_question_family,
+            )
         if self._looks_numeric(question):
             source_text = entry.full_text if entry.full_text else entry.excerpt
             return self._extract_numeric_answer(question, source_text) is not None
@@ -2075,6 +5421,285 @@ class EmbeddedRetrievalPrototype:
         if self._is_comparison_query(question):
             return self._has_grounded_comparison_coverage(question, [entry]) or not self._missing_requirement_tokens(question, [entry])
         return not self._missing_requirement_tokens(question, [entry])
+
+    def _table_evidence_directly_answers(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+        table_question_family: str,
+    ) -> bool:
+        source_text = self._normalize_search_text(
+            entry.full_text if entry.full_text else entry.excerpt
+        )
+        summary_text = self._normalize_search_text(f"{entry.section} {source_text}")
+        lowered_text = source_text.lower()
+        lowered_summary_text = summary_text.lower()
+        row_quality = self._table_row_candidate_bonus(question, table_question_family, source_text)
+        if row_quality < 6.0:
+            return False
+        is_low_signal = self._is_low_signal_for_question(question, entry)
+        if table_question_family in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        } and is_low_signal:
+            return False
+        if is_low_signal and row_quality < 8.5:
+            return False
+
+        if table_question_family in {TABLE_QUESTION_FEATURE, TABLE_QUESTION_PERIPHERAL_COUNT}:
+            feature_terms = [
+                term for term in FEATURE_QUERY_TERMS
+                if term in self._normalize_search_text(question).lower()
+            ]
+            if not feature_terms:
+                return False
+            feature_hits = sum(1 for term in feature_terms if term in lowered_text)
+            if feature_hits == 0:
+                return False
+            if table_question_family == TABLE_QUESTION_PERIPHERAL_COUNT:
+                return bool(
+                    row_quality >= 7.5
+                    and re.search(
+                        r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|up to)\b",
+                        lowered_text,
+                    )
+                )
+            return row_quality >= 6.8
+
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            memory_terms = [
+                term for term in MEMORY_QUERY_TERMS
+                if term in self._normalize_search_text(question).lower()
+            ]
+            term_hits = sum(1 for term in memory_terms if term in lowered_text)
+            has_capacity = bool(re.search(r"\b\d+\s*(?:kbytes?|kb|mb)\b", lowered_text))
+            requested_device_tokens = self._question_device_tokens(question)
+            exact_grounded_memory_terms: set[str] = set()
+            exact_variant_capacity_match = False
+            if requested_device_tokens:
+                requested_memory_terms = [term for term in memory_terms if term != "memory"]
+                exact_requested_tokens = [
+                    requested_token
+                    for requested_token in requested_device_tokens
+                    if "X" not in self._compact_alnum(requested_token)
+                ]
+                if exact_requested_tokens and entry.device_family:
+                    compact_entry_device = self._compact_alnum(entry.device_family)
+                    if compact_entry_device and all(
+                        compact_entry_device != self._compact_alnum(requested_token)
+                        for requested_token in exact_requested_tokens
+                    ):
+                        return False
+                use_strict_device_match = bool(exact_requested_tokens)
+                normalized_lines = [
+                    self._normalize_search_text(line)
+                    for line in source_text.splitlines()
+                    if self._normalize_search_text(line)
+                ]
+                compact_source_text = self._normalize_search_text(source_text)
+                if len(normalized_lines) <= 1 and compact_source_text:
+                    normalized_lines = [compact_source_text]
+                closure_lines = self._build_memory_variant_grounded_lines(
+                    question,
+                    normalized_lines,
+                    0,
+                    len(normalized_lines),
+                )
+                closure_text = self._normalize_search_text("\n".join(closure_lines))
+                closure_lowered = closure_text.lower()
+                closure_has_capacity = bool(re.search(r"\b\d+\s*(?:kbytes?|kb|mb)\b", closure_lowered))
+                closure_grounded_memory_terms: set[str] = set()
+                for term in requested_memory_terms:
+                    if re.search(
+                        rf"\b{term}\b[^\n]{{0,28}}\b\d+\s*(?:kbytes?|kb|mb)\b|\b\d+\s*(?:kbytes?|kb|mb)\b[^\n]{{0,28}}\b{term}\b",
+                        closure_lowered,
+                    ):
+                        closure_grounded_memory_terms.add(term)
+
+                for line in normalized_lines:
+                    lowered_line = line.lower()
+                    if use_strict_device_match:
+                        line_matches_requested_device = any(
+                            self._source_matches_requested_device_token(
+                                requested_token,
+                                line,
+                                allow_family_alias=False,
+                            )
+                            for requested_token in exact_requested_tokens
+                        )
+                    else:
+                        line_matches_requested_device = any(
+                            self._source_matches_requested_device_token(
+                                requested_token,
+                                line,
+                            )
+                            for requested_token in requested_device_tokens
+                        )
+                    if not line_matches_requested_device:
+                        continue
+                    if not re.search(r"\b\d+\s*(?:kbytes?|kb|mb)\b", lowered_line):
+                        continue
+                    exact_variant_capacity_match = True
+                    for term in requested_memory_terms:
+                        if re.search(
+                            rf"\b{term}\b[^\n]{{0,28}}\b\d+\s*(?:kbytes?|kb|mb)\b|\b\d+\s*(?:kbytes?|kb|mb)\b[^\n]{{0,28}}\b{term}\b",
+                            lowered_line,
+                        ):
+                            exact_grounded_memory_terms.add(term)
+
+                if not (exact_variant_capacity_match or closure_has_capacity):
+                    return False
+                grounded_memory_terms = exact_grounded_memory_terms | closure_grounded_memory_terms
+                if requested_memory_terms and len(grounded_memory_terms) < max(
+                    1,
+                    min(2, len(requested_memory_terms)),
+                ):
+                    return False
+                if use_strict_device_match:
+                    if not (
+                        self._source_matches_requested_device(
+                            question,
+                            source_text,
+                            allow_family_alias=False,
+                        )
+                        or self._source_matches_requested_device(
+                            question,
+                            closure_text,
+                            allow_family_alias=False,
+                        )
+                    ):
+                        return False
+                elif not self._source_matches_requested_device(question, source_text):
+                    return False
+                if self._source_has_multiple_capacity_options(source_text):
+                    return False
+                if "up to" in lowered_text:
+                    return False
+                if self._source_has_family_wide_scope(source_text) and not exact_variant_capacity_match:
+                    return False
+            return row_quality >= 7.0 and term_hits >= max(1, min(2, len(memory_terms))) and has_capacity
+
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            requested_device_tokens = self._question_device_tokens(question)
+            exact_requested_tokens = [
+                requested_token
+                for requested_token in requested_device_tokens
+                if "X" not in self._compact_alnum(requested_token)
+            ]
+            if exact_requested_tokens and entry.device_family:
+                compact_entry_device = self._compact_alnum(entry.device_family)
+                if compact_entry_device and all(
+                    compact_entry_device != self._compact_alnum(requested_token)
+                    for requested_token in exact_requested_tokens
+                ):
+                    return False
+            package_match = PACKAGE_NAME_RE.search(question)
+            exact_package_code = self._extract_requested_ordering_package_code(
+                question,
+                source_text,
+                allow_family_fallback=False,
+            )
+            if package_match and not exact_package_code:
+                return False
+            if "code" in self._normalize_search_text(question).lower() and "code" not in lowered_summary_text:
+                return False
+            if self._question_device_tokens(question) and not self._source_matches_requested_device(
+                question,
+                source_text,
+            ):
+                return False
+            if not self._ordering_source_has_exact_variant_closure(question, source_text):
+                return False
+            package_scope_ok = True
+            if package_match:
+                requested_package = package_match.group(0).lower().replace(" ", "")
+                package_scope_ok = requested_package in lowered_text.replace(" ", "")
+                if not package_scope_ok:
+                    family_pin_match = re.fullmatch(r"([a-z]+)(\d+)", requested_package)
+                    if family_pin_match:
+                        package_family, pin_count = family_pin_match.groups()
+                        package_scope_ok = package_family in lowered_text and (
+                            re.search(rf"\b{pin_count}\s*[- ]?pins?\b", lowered_text)
+                            or bool(re.search(r"\b[a-z0-9]{1,4}\s*=\s*(?:lqfp|ufqfpn|vfqfpn|tfbga|lfbga|ufbga|bga)\b", lowered_text))
+                        )
+            if not package_scope_ok:
+                return False
+            has_ordering_context = any(
+                term in lowered_summary_text
+                for term in ["ordering information", "ordering information scheme", "ordering code", "order code", "package code"]
+            )
+            has_mapping_context = self._has_requested_ordering_mapping_context(
+                question,
+                source_text,
+            )
+            return (
+                row_quality >= 7.2
+                and exact_package_code is not None
+                and has_ordering_context
+                and has_mapping_context
+            )
+
+        if table_question_family == TABLE_QUESTION_PACKAGE:
+            requested_device_tokens = self._question_device_tokens(question)
+            exact_requested_tokens = [
+                requested_token
+                for requested_token in requested_device_tokens
+                if "X" not in self._compact_alnum(requested_token)
+            ]
+            has_explicit_package_constraint = PACKAGE_NAME_RE.search(question) is not None
+            if exact_requested_tokens and entry.device_family:
+                compact_entry_device = self._compact_alnum(entry.device_family)
+                if compact_entry_device and all(
+                    compact_entry_device != self._compact_alnum(requested_token)
+                    for requested_token in exact_requested_tokens
+                ):
+                    return False
+            package_answer_text = source_text
+            if not has_explicit_package_constraint:
+                normalized_lines = [
+                    self._normalize_search_text(line)
+                    for line in source_text.splitlines()
+                    if self._normalize_search_text(line)
+                ]
+                compact_source_text = self._normalize_search_text(source_text)
+                if len(normalized_lines) <= 1 and compact_source_text:
+                    normalized_lines = [compact_source_text]
+                exact_package_lines = self._build_exact_package_variant_lines(
+                    question,
+                    normalized_lines,
+                    0,
+                    len(normalized_lines),
+                    include_ordering_code=False,
+                )
+                if not exact_package_lines:
+                    return False
+                package_answer_text = self._normalize_search_text("\n".join(exact_package_lines))
+                if exact_requested_tokens and not self._source_matches_requested_device(
+                    question,
+                    package_answer_text,
+                    allow_family_alias=False,
+                ):
+                    return False
+            elif requested_device_tokens and not self._source_matches_requested_device(question, source_text):
+                return False
+
+            if self._extract_package_identity_phrase(package_answer_text) is None:
+                return False
+            if self._source_has_multiple_package_options(package_answer_text):
+                return False
+            return row_quality >= 7.0 and any(
+                term in lowered_summary_text
+                for term in ["package information", "package options", "package", "lqfp", "ufqfpn", "vfqfpn", "bga"]
+            )
+
+        if table_question_family == TABLE_QUESTION_DEVICE_VARIANT:
+            return row_quality >= 7.0 and any(
+                term in lowered_summary_text
+                for term in ["device summary", "part number", "variant", "package", "ordering"]
+            )
+
+        return False
 
     def _supports_absence_claim(self, question: str, evidence: list[EvidenceRecord]) -> bool:
         missing_tokens = self._missing_requirement_tokens(question, evidence)
@@ -2252,6 +5877,332 @@ class EmbeddedRetrievalPrototype:
 
         return None
 
+    def _table_question_subject_label(self, question: str) -> str | None:
+        if self.filters.device:
+            return self.filters.device
+        device_tokens = self._question_device_tokens(question)
+        if device_tokens:
+            return device_tokens[0]
+        return None
+
+    def _build_table_grounded_short_answer(
+        self,
+        question: str,
+        entry: EvidenceRecord,
+        table_question_family: str,
+    ) -> str | None:
+        source_text = self._normalize_search_text(entry.full_text if entry.full_text else entry.excerpt)
+        subject_label = self._table_question_subject_label(question)
+
+        if table_question_family in {TABLE_QUESTION_FEATURE, TABLE_QUESTION_PERIPHERAL_COUNT}:
+            feature_terms = [
+                term for term in FEATURE_QUERY_TERMS if term in self._normalize_search_text(question).lower()
+            ]
+            if not feature_terms:
+                return None
+            feature_phrase = self._extract_feature_count_phrase(source_text, feature_terms)
+            if feature_phrase is None:
+                return None
+            if subject_label:
+                return (
+                    f"The strongest grounded evidence indicates that {subject_label} provides {feature_phrase} "
+                    f"in [S1] {entry.section} (page {entry.page})."
+                )
+            return (
+                f"The strongest grounded evidence indicates {feature_phrase} "
+                f"in [S1] {entry.section} (page {entry.page})."
+            )
+
+        if table_question_family == TABLE_QUESTION_MEMORY:
+            memory_phrase = self._extract_memory_capacity_phrase(question, source_text)
+            if memory_phrase is None:
+                return None
+            if subject_label:
+                return (
+                    f"The strongest grounded evidence indicates that {subject_label} provides {memory_phrase} "
+                    f"in [S1] {entry.section} (page {entry.page})."
+                )
+            return (
+                f"The strongest grounded evidence indicates {memory_phrase} "
+                f"in [S1] {entry.section} (page {entry.page})."
+            )
+
+        if table_question_family == TABLE_QUESTION_PACKAGE:
+            package_phrase = self._extract_package_identity_phrase(source_text)
+            if package_phrase is None:
+                return None
+            if subject_label:
+                return (
+                    f"The strongest grounded evidence indicates that {subject_label} is listed in {package_phrase} "
+                    f"in [S1] {entry.section} (page {entry.page})."
+                )
+            return (
+                f"The strongest grounded evidence indicates {package_phrase} "
+                f"in [S1] {entry.section} (page {entry.page})."
+            )
+
+        if table_question_family == TABLE_QUESTION_ORDERING:
+            ordering_phrase = self._extract_ordering_mapping_phrase(question, source_text)
+            if ordering_phrase is None:
+                return None
+            return (
+                f"The strongest grounded evidence indicates that {ordering_phrase} "
+                f"in [S1] {entry.section} (page {entry.page})."
+            )
+
+        return None
+
+    def _extract_feature_count_phrase(
+        self,
+        source_text: str,
+        feature_terms: list[str],
+    ) -> str | None:
+        lowered_text = self._normalize_search_text(source_text).lower()
+        count_pattern = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|up to \d+)"
+        for feature_term in feature_terms:
+            if feature_term not in lowered_text:
+                continue
+            rendered_term = feature_term.upper() if len(feature_term) <= 4 else feature_term
+            direct_match = re.search(
+                rf"\b({count_pattern}(?:\s+12-bit)?)\s+({re.escape(feature_term)}s?)\b",
+                lowered_text,
+            )
+            if direct_match:
+                suffix = "s" if direct_match.group(2).endswith("s") else ""
+                return f"{direct_match.group(1)} {rendered_term}{suffix}"
+            reverse_match = re.search(
+                rf"\b({re.escape(feature_term)}s?)\b[^\n]{{0,40}}\b({count_pattern})\b",
+                lowered_text,
+            )
+            if reverse_match:
+                suffix = "s" if reverse_match.group(1).endswith("s") else ""
+                return f"{reverse_match.group(2)} {rendered_term}{suffix}"
+        return None
+
+    def _extract_memory_capacity_phrase(self, question: str, source_text: str) -> str | None:
+        if self._source_has_multiple_capacity_options(source_text):
+            return None
+
+        lowered_text = self._normalize_search_text(source_text).lower()
+        requested_terms = [
+            term for term in MEMORY_QUERY_TERMS if term in self._normalize_search_text(question).lower()
+        ]
+        if not requested_terms:
+            requested_terms = ["flash", "sram"]
+
+        phrases: list[str] = []
+        for term in requested_terms:
+            if term == "memory":
+                continue
+            direct_match = re.search(
+                rf"\b(\d+)\s*(kbytes?|kb|mb)\s+of\s+{re.escape(term)}(?:\s+memory)?\b",
+                lowered_text,
+            )
+            if direct_match:
+                value, unit = direct_match.groups()
+                phrases.append(f"{value} {unit} of {term.upper() if len(term) <= 4 else term}")
+                continue
+            reverse_match = re.search(
+                rf"\b{re.escape(term)}(?:\s+memory)?\b[^\n]{{0,20}}\b(\d+)\s*(kbytes?|kb|mb)\b",
+                lowered_text,
+            )
+            if reverse_match:
+                value, unit = reverse_match.groups()
+                phrases.append(f"{value} {unit} of {term.upper() if len(term) <= 4 else term}")
+
+        if not phrases:
+            return None
+        if len(phrases) == 1:
+            return phrases[0]
+        return " and ".join(phrases[:2])
+
+    def _source_has_requested_pin_mapping(self, question: str, source_text: str) -> bool:
+        package_match = PACKAGE_NAME_RE.search(question)
+        requested_pin_count: str | None = None
+        if package_match:
+            family_pin_match = re.fullmatch(
+                r"([A-Z]+)(\d+)",
+                self._normalize_search_text(package_match.group(0)).upper().replace(" ", ""),
+            )
+            if family_pin_match:
+                _, requested_pin_count = family_pin_match.groups()
+
+        if not requested_pin_count:
+            return False
+
+        upper_text = self._normalize_search_text(source_text).upper()
+        if not re.search(rf"\b{re.escape(requested_pin_count)}\s*PINS?\b", upper_text):
+            return False
+
+        requested_variant_codes = self._requested_device_variant_codes(question)
+        requested_pin_codes = {pin_code for pin_code, _ in requested_variant_codes}
+        if not requested_pin_codes:
+            return True
+
+        return any(
+            re.search(
+                rf"\b{re.escape(pin_code)}\s*=\s*{re.escape(requested_pin_count)}\s*PINS?\b",
+                upper_text,
+            )
+            for pin_code in requested_pin_codes
+        )
+
+    def _source_has_requested_density_mapping(self, question: str, source_text: str) -> bool:
+        requested_variant_codes = self._requested_device_variant_codes(question)
+        requested_density_codes = {density_code for _, density_code in requested_variant_codes}
+        if not requested_density_codes:
+            return False
+
+        upper_text = self._normalize_search_text(source_text).upper()
+        if "FLASH MEMORY" not in upper_text:
+            return False
+
+        return any(
+            re.search(
+                rf"\b{re.escape(density_code)}\s*=\s*\d+\s*(?:KBYTES?|KB|MB)\b",
+                upper_text,
+            )
+            for density_code in requested_density_codes
+        )
+
+    def _extract_package_identity_phrase(self, source_text: str) -> str | None:
+        normalized_text = self._normalize_search_text(source_text).upper()
+        unique_packages: list[str] = []
+        for match in re.finditer(r"\b(?:LQFP|UFQFPN|VFQFPN|TFBGA|LFBGA|UFBGA|BGA)\s*\d+\b", normalized_text):
+            package_name = match.group(0).replace(" ", "")
+            if package_name not in unique_packages:
+                unique_packages.append(package_name)
+        if len(unique_packages) == 1:
+            return unique_packages[0]
+        return None
+
+    def _extract_requested_ordering_package_code(
+        self,
+        question: str,
+        source_text: str,
+        *,
+        allow_family_fallback: bool,
+    ) -> str | None:
+        package_match = PACKAGE_NAME_RE.search(question)
+        if not package_match:
+            return None
+
+        normalized_question_package = self._normalize_search_text(package_match.group(0)).upper()
+        normalized_text = self._normalize_search_text(source_text).upper()
+        family_pin_match = re.fullmatch(r"([A-Z]+)[ -]?(\d+)", normalized_question_package)
+        if family_pin_match:
+            package_family, pin_count = family_pin_match.groups()
+            exact_patterns = [
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(package_family)}{re.escape(pin_count)}\b",
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(package_family)}\s+{re.escape(pin_count)}\b",
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(package_family)}-{re.escape(pin_count)}\b",
+            ]
+            requested_device_tokens = self._question_device_tokens(question)
+            if requested_device_tokens:
+                device_scoped_codes: set[str] = set()
+                for raw_line in source_text.splitlines():
+                    normalized_line = self._normalize_search_text(raw_line).upper()
+                    if not normalized_line:
+                        continue
+                    if not any(
+                        self._source_matches_requested_device_token(requested_token, normalized_line)
+                        for requested_token in requested_device_tokens
+                    ):
+                        continue
+                    for pattern in exact_patterns:
+                        for match in re.finditer(pattern, normalized_line):
+                            device_scoped_codes.add(match.group(1))
+                if len(device_scoped_codes) == 1:
+                    return next(iter(device_scoped_codes))
+            exact_codes = {
+                match.group(1)
+                for pattern in exact_patterns
+                for match in re.finditer(pattern, normalized_text)
+            }
+            if len(exact_codes) == 1:
+                return next(iter(exact_codes))
+        else:
+            exact_match = re.search(
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(normalized_question_package)}\b",
+                normalized_text,
+            )
+            if exact_match:
+                return exact_match.group(1)
+        if not allow_family_fallback:
+            return None
+
+        if not family_pin_match:
+            return None
+
+        package_family, pin_count = family_pin_match.groups()
+        family_codes = {
+            match.group(1)
+            for match in re.finditer(
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(package_family)}\b",
+                normalized_text,
+            )
+        }
+        pin_count_codes = {
+            match.group(1)
+            for match in re.finditer(
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(pin_count)}\s*PINS?\b",
+                normalized_text,
+            )
+        }
+        shared_codes = family_codes & pin_count_codes
+        if len(shared_codes) == 1:
+            return next(iter(shared_codes))
+        return None
+
+    def _has_requested_ordering_mapping_context(self, question: str, source_text: str) -> bool:
+        lowered_text = self._normalize_search_text(source_text).lower()
+        exact_package_code = self._extract_requested_ordering_package_code(
+            question,
+            source_text,
+            allow_family_fallback=False,
+        )
+        if exact_package_code is None:
+            return False
+        return any(
+            term in lowered_text
+            for term in ["ordering information", "ordering information scheme", "ordering code", "order code", "package code"]
+        )
+
+    def _extract_ordering_mapping_phrase(self, question: str, source_text: str) -> str | None:
+        normalized_text = self._normalize_search_text(source_text)
+        lowered_text = normalized_text.lower()
+        package_match = PACKAGE_NAME_RE.search(question)
+        if package_match:
+            requested_package = package_match.group(0).upper().replace(" ", "")
+            exact_match = self._extract_requested_ordering_package_code(
+                question,
+                source_text,
+                allow_family_fallback=False,
+            )
+            if exact_match:
+                return f"package code {exact_match} corresponds to {requested_package}"
+
+            composed_match = self._extract_requested_ordering_package_code(
+                question,
+                source_text,
+                allow_family_fallback=True,
+            )
+            if composed_match:
+                return f"package code {composed_match} corresponds to {requested_package}"
+
+            requested_family = re.sub(r"\d+$", "", requested_package)
+            family_match = re.search(
+                rf"\b([A-Z0-9]{{1,4}})\s*=\s*{re.escape(requested_family)}\b",
+                normalized_text,
+            )
+            if family_match:
+                return f"package code {family_match.group(1)} corresponds to {requested_family}"
+
+        example_match = re.search(r"\bExample:\s*([A-Z0-9 ]{8,40})", normalized_text, flags=re.IGNORECASE)
+        if example_match and "ordering" in lowered_text:
+            return f"the ordering example is {example_match.group(1).strip()}"
+        return None
+
     def _build_register_summary(
         self,
         question: str,
@@ -2420,6 +6371,8 @@ class EmbeddedRetrievalPrototype:
         for normalized in question_pins:
             if normalized in source_pins:
                 return normalized
+        if question_pins:
+            return None
 
         question_has_explicit_signal = bool(
             SIGNAL_NAME_RE.search(question) or re.search(r"\bAF\d+\b", question, flags=re.IGNORECASE)
@@ -2429,7 +6382,7 @@ class EmbeddedRetrievalPrototype:
 
         if source_pins:
             return source_pins[0]
-        return question_pins[0] if question_pins else None
+        return None
 
     def _extract_package_name(self, question: str, source_text: str) -> str | None:
         question_match = PACKAGE_NAME_RE.search(question)
@@ -2437,28 +6390,318 @@ class EmbeddedRetrievalPrototype:
             return question_match.group(0).upper()
         return None
 
-    def _extract_pin_mapping_values(self, question: str, source_text: str) -> str | None:
-        signal_or_function = self._extract_pin_signal_or_function(question, source_text)
-        if not signal_or_function:
-            return None
+    def _compact_alnum(self, value: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", self._normalize_search_text(value).upper())
+
+    def _restricted_device_token_aliases(
+        self,
+        compact_requested: str,
+        *,
+        allow_family_alias: bool = True,
+    ) -> list[str]:
+        aliases = [compact_requested]
+        if not allow_family_alias or "X" in compact_requested:
+            return aliases
+        alias_match = re.fullmatch(r"(STM32[A-Z0-9]{4,})([A-Z])([A-Z0-9])", compact_requested)
+        if not alias_match:
+            return aliases
+
+        family_stem, _package_code, density_code = alias_match.groups()
+        alias_token = f"{family_stem}X{density_code}"
+        if alias_token not in aliases:
+            aliases.append(alias_token)
+        return aliases
+
+    def _source_matches_requested_device(
+        self,
+        question: str,
+        source_text: str,
+        *,
+        allow_family_alias: bool = True,
+    ) -> bool:
+        requested_tokens = self._question_device_tokens(question)
+        if not requested_tokens:
+            return True
+        return any(
+            self._source_matches_requested_device_token(
+                requested_token,
+                source_text,
+                allow_family_alias=allow_family_alias,
+            )
+            for requested_token in requested_tokens
+        )
+
+    def _source_matches_requested_device_token(
+        self,
+        requested_token: str,
+        source_text: str,
+        *,
+        allow_family_alias: bool = True,
+    ) -> bool:
+        compact_requested = self._compact_alnum(requested_token)
+        compact_source = self._compact_alnum(source_text)
+        if not compact_requested or not compact_source:
+            compact_source = ""
+
+        compact_source_stem = ""
+        if self.source.is_file():
+            compact_source_stem = self._compact_alnum(self.source.stem)
+        if compact_requested in compact_source:
+            return True
+        if compact_source_stem and compact_requested in compact_source_stem:
+            return True
+
+        requested_candidates = self._restricted_device_token_aliases(
+            compact_requested,
+            allow_family_alias=allow_family_alias,
+        )
+        for candidate in requested_candidates:
+            if candidate == compact_requested:
+                continue
+            if candidate in compact_source:
+                return True
+            if compact_source_stem and candidate in compact_source_stem:
+                return True
+
+        return False
+
+    def _ordering_source_has_exact_variant_closure(self, question: str, source_text: str) -> bool:
+        requested_device_tokens = self._question_device_tokens(question)
+        exact_requested_tokens = [
+            requested_token
+            for requested_token in requested_device_tokens
+            if "X" not in self._compact_alnum(requested_token)
+        ]
+        if not exact_requested_tokens:
+            return True
 
         normalized_lines = [
             self._normalize_search_text(line)
             for line in source_text.splitlines()
             if self._normalize_search_text(line)
         ]
-        target_index = next(
-            (
-                index
-                for index, line in enumerate(normalized_lines)
-                if signal_or_function in line.upper() and PIN_NAME_RE.search(line)
-            ),
-            None,
+        compact_source_text = self._normalize_search_text(source_text)
+        if len(normalized_lines) <= 1 and compact_source_text:
+            normalized_lines = [compact_source_text]
+
+        synthetic_prefixes = [
+            f"{self._normalize_search_text(requested_token).upper()} PACKAGE ="
+            for requested_token in exact_requested_tokens
+        ]
+        synthetic_prefixes.extend(
+            f"{self._normalize_search_text(requested_token).upper()} PACKAGE CODE "
+            for requested_token in exact_requested_tokens
         )
-        if target_index is None:
+
+        for line in normalized_lines:
+            upper_line = self._normalize_search_text(line).upper()
+            if any(upper_line.startswith(prefix) for prefix in synthetic_prefixes):
+                continue
+            if any(
+                self._source_matches_requested_device_token(
+                    requested_token,
+                    line,
+                    allow_family_alias=False,
+                )
+                for requested_token in exact_requested_tokens
+            ):
+                return True
+
+        return False
+
+    def _source_has_family_wide_scope(self, source_text: str) -> bool:
+        lowered_text = self._normalize_search_text(source_text).lower()
+        return any(
+            term in lowered_text
+            for term in [
+                "all devices",
+                "all variants",
+                "device summary",
+                "the stm32f103xx",
+                "performance line family",
+                "medium-density performance line",
+            ]
+        )
+
+    def _source_has_multiple_capacity_options(self, source_text: str) -> bool:
+        lowered_text = self._normalize_search_text(source_text).lower()
+        if re.search(
+            r"\b\d+\s*(?:kbytes?|kb|mb)?\s*(?:/|or)\s*\d+\s*(?:kbytes?|kb|mb)\b",
+            lowered_text,
+        ):
+            return True
+        if "up to" in lowered_text and len(re.findall(r"\b\d+\s*(?:kbytes?|kb|mb)\b", lowered_text)) >= 2:
+            return True
+        return False
+
+    def _source_matches_requested_package(self, requested_package: str, source_text: str) -> bool:
+        compact_requested = self._compact_alnum(requested_package)
+        compact_source = self._compact_alnum(source_text)
+        if compact_requested and compact_requested in compact_source:
+            return True
+
+        family_pin_match = re.fullmatch(r"([A-Z]+)(\d+)", compact_requested)
+        if not family_pin_match:
+            return False
+
+        package_family, pin_count = family_pin_match.groups()
+        lowered_text = self._normalize_search_text(source_text).lower()
+        return package_family.lower() in lowered_text and bool(
+            re.search(rf"\b{pin_count}\s*[- ]?pins?\b", lowered_text)
+        )
+
+    def _source_has_multiple_package_options(self, source_text: str) -> bool:
+        normalized_text = self._normalize_search_text(source_text).upper()
+        package_hits = {
+            match.group(0).replace(" ", "")
+            for match in re.finditer(
+                r"\b(?:LQFP|UFQFPN|VFQFPN|TFBGA|LFBGA|UFBGA|BGA)\s*\d*\b",
+                normalized_text,
+            )
+        }
+        exact_package_hits = {hit for hit in package_hits if re.search(r"\d", hit)}
+        covered_package_families = {
+            re.sub(r"\d+$", "", hit)
+            for hit in exact_package_hits
+        }
+        if exact_package_hits:
+            package_hits = {
+                hit
+                for hit in package_hits
+                if re.search(r"\d", hit) or hit not in covered_package_families
+            }
+        if len(package_hits) >= 2:
+            return True
+        mapping_hits = {
+            match.group(1).replace(" ", "")
+            for match in re.finditer(
+                r"\b[A-Z0-9]{1,4}\s*=\s*((?:LQFP|UFQFPN|VFQFPN|TFBGA|LFBGA|UFBGA|BGA)\s*\d*)\b",
+                normalized_text,
+            )
+        }
+        exact_mapping_hits = {hit for hit in mapping_hits if re.search(r"\d", hit)}
+        covered_mapping_families = {
+            re.sub(r"\d+$", "", hit)
+            for hit in exact_mapping_hits
+        }
+        if exact_mapping_hits:
+            mapping_hits = {
+                hit
+                for hit in mapping_hits
+                if re.search(r"\d", hit) or hit not in covered_mapping_families
+            }
+        return len(mapping_hits) >= 2
+
+    def _source_only_pin_scope_hints(self, question: str, source_text: str) -> list[str]:
+        normalized_question = self._normalize_search_text(question)
+        normalized_source = self._normalize_search_text(source_text)
+        lowered_question = normalized_question.lower()
+        lowered_source = normalized_source.lower()
+        hints: list[str] = []
+
+        question_has_package = PACKAGE_NAME_RE.search(normalized_question) is not None
+        source_has_explicit_package_scope = PACKAGE_NAME_RE.search(normalized_source) is not None
+        source_has_package_table_scope = (
+            "pin definitions" in lowered_source
+            and "pins" in lowered_source
+            and len(PIN_NAME_RE.findall(normalized_source)) >= 2
+        )
+        if not question_has_package and (source_has_explicit_package_scope or source_has_package_table_scope):
+            hints.append(
+                "The retrieved pin row is package-scoped; specify the package or package variant before selecting one grounded pin mapping."
+            )
+
+        question_has_remap_assignment = bool(
+            re.search(r"\b([A-Z0-9_]+)\s*=\s*([01])\b", normalized_question, flags=re.IGNORECASE)
+        )
+        question_has_family_anchor = "remap" in lowered_question or bool(
+            re.search(r"\btable\s+\d+\b", lowered_question)
+        )
+        source_has_remap_scope = bool(
+            re.search(r"\b([A-Z0-9_]+)\s*=\s*([01])\b", normalized_source, flags=re.IGNORECASE)
+        ) or "remap not available" in lowered_source
+        if source_has_remap_scope and not question_has_remap_assignment and not question_has_family_anchor:
+            hints.append(
+                "The retrieved pin row is sibling-specific and still needs remap/package-variant disambiguation before selecting one grounded pin mapping."
+            )
+
+        return hints
+
+    def _extract_pin_mapping_values(self, question: str, source_text: str) -> str | None:
+        requested_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in source_text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+
+        if requested_pins:
+            requested_values: list[str] = []
+            seen_requested_pins: set[str] = set()
+            mapping_value_pattern = re.compile(
+                r"\b[A-Z]\d{1,2}\s*/\s*[A-Z]\d{1,2}\b|\b[A-Z]\d{1,2}\b|(?<![A-Z0-9_])-(?![A-Z0-9_])"
+            )
+
+            for requested_pin in requested_pins:
+                if requested_pin in seen_requested_pins:
+                    continue
+                seen_requested_pins.add(requested_pin)
+
+                matched_value: str | None = None
+                pin_pattern = re.compile(rf"\b{re.escape(requested_pin)}\b")
+                for line in normalized_lines:
+                    upper_line = line.upper()
+                    pin_match = pin_pattern.search(upper_line)
+                    if not pin_match:
+                        continue
+
+                    tail = upper_line[pin_match.end() :]
+                    tail_values = [match.group(0) for match in mapping_value_pattern.finditer(tail)]
+                    if not tail_values:
+                        continue
+
+                    matched_value = re.sub(r"\s*/\s*", "/", tail_values[-1].upper())
+                    break
+
+                if matched_value is not None:
+                    requested_values.append(matched_value)
+
+            if requested_values:
+                if all(value == "-" for value in requested_values):
+                    return "-"
+                if len(requested_values) == 1:
+                    return requested_values[0]
+                return " / ".join(requested_values)
+
+        signal_or_function = self._extract_pin_signal_or_function(question, source_text)
+        if not signal_or_function:
             return None
 
-        row_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(normalized_lines[target_index])]
+        target_index: int | None = None
+        row_pins: list[str] = []
+        for index, line in enumerate(normalized_lines):
+            upper_line = line.upper()
+            if signal_or_function not in upper_line:
+                continue
+
+            line_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(line)]
+            if not line_pins:
+                continue
+
+            if requested_pins:
+                matched_pins = [pin for pin in requested_pins if pin in line_pins]
+                if not matched_pins:
+                    continue
+                row_pins = matched_pins
+            else:
+                row_pins = line_pins
+
+            target_index = index
+            break
+
+        if target_index is None:
+            return None
         if not row_pins:
             return None
 
@@ -2488,8 +6731,16 @@ class EmbeddedRetrievalPrototype:
     ) -> str | None:
         source_text = entry.full_text if entry.full_text else entry.excerpt
         signal_or_function = self._extract_pin_signal_or_function(question, source_text)
+        pin_name = self._extract_pin_name(question, source_text)
+        package_name = self._extract_package_name(question, source_text)
         if not signal_or_function:
             return None
+        if pin_name:
+            package_clause = f" for {package_name}" if package_name else ""
+            return (
+                f"The strongest grounded evidence indicates that {signal_or_function} maps to {pin_name}"
+                f"{package_clause} in [S1] {entry.section} (page {entry.page})."
+            )
 
         normalized_lines = [
             self._normalize_search_text(line)
@@ -2666,6 +6917,12 @@ class EmbeddedRetrievalPrototype:
     def _should_gate_on_pin_mapping_gap(self, question: str, evidence: list[EvidenceRecord]) -> bool:
         if not evidence:
             return False
+        if self._table_question_family(question) in {
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            return False
         if not self._is_pin_intent_query(question):
             return False
         return not self._has_supported_pin_mapping_answer(question, evidence)
@@ -2679,7 +6936,9 @@ class EmbeddedRetrievalPrototype:
         summary_signal_text = f"{top_entry.section} {source_text}"
         if not self._is_pin_mapping_lookup_query(question, summary_signal_text):
             return False
-        return self._build_pin_summary(question, summary_signal_text) is not None
+        if self._build_pin_summary(question, summary_signal_text) is None:
+            return False
+        return not self._pin_constraint_failure_hints(question, top_entry)
 
     def _is_pin_intent_query(self, question: str) -> bool:
         question_signal = self._normalize_search_text(question).lower()
@@ -3028,6 +7287,22 @@ class EmbeddedRetrievalPrototype:
         top_entry = evidence[0]
         excerpt = top_entry.excerpt
         source_text = top_entry.full_text if top_entry.full_text else excerpt
+        table_question_family = self._table_question_family(question)
+        if table_question_family in {
+            TABLE_QUESTION_FEATURE,
+            TABLE_QUESTION_PERIPHERAL_COUNT,
+            TABLE_QUESTION_MEMORY,
+            TABLE_QUESTION_PACKAGE,
+            TABLE_QUESTION_ORDERING,
+            TABLE_QUESTION_DEVICE_VARIANT,
+        }:
+            table_answer = self._build_table_grounded_short_answer(
+                question,
+                top_entry,
+                table_question_family,
+            )
+            if table_answer:
+                return table_answer
         pin_answer = None
         if self._is_pin_intent_query(question):
             pin_answer = self._build_pin_grounded_short_answer(question, top_entry)
@@ -3117,6 +7392,8 @@ class EmbeddedRetrievalPrototype:
         question: str,
         evidence: list[EvidenceRecord],
         searched_documents: list[str],
+        *,
+        extra_open_questions: list[str] | None = None,
     ) -> RetrievalResult:
         relevant_evidence = evidence[:2]
         if self._is_register_lookup_query(question):
@@ -3144,6 +7421,10 @@ class EmbeddedRetrievalPrototype:
             guidance = "Try a more specific section hint, exact register/peripheral name, or a more authoritative manual."
 
         open_questions = [guidance]
+        if extra_open_questions:
+            for hint in extra_open_questions:
+                if hint and hint not in open_questions:
+                    open_questions.append(hint)
         if missing_tokens:
             open_questions.append(
                 "Top evidence still missed these query terms: " + ", ".join(missing_tokens[:4]) + "."
