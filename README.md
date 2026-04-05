@@ -12,8 +12,8 @@
   - `structured_summary.kind = "register"`
   - `structured_summary.kind = "electrical_parameter"`
   - `structured_summary.kind = "pin"`
-- 当前稳定的 pin 正向路径是 reference manual 的 `Table 54` 车道。固定回归里，`USART1_TX` / `USART1_RX` 在这条路径上属于 baseline-blocking。
-- datasheet 里的 package wording probes（例如 `LQFP48 package`）当前在固定回归中归类为 `extended-conservative`。它们的职责是确认结果保持保守，不漂移成 parameter-style answer；它们不是默认 blocking baseline。
+- 当前稳定的 pin 正向路径主要有两类：reference manual 的 `Table 54` 车道，以及一个已固化的 datasheet package-constrained sample：`STM32F103x8B + LQFP48 + USART1_TX -> PA9`。
+- 这不意味着“datasheet pin/package 已经全面稳定”。除上述已验证 sample 外，更广泛的 datasheet pin/package wording 仍应视为保守能力边界。
 
 ## 当前支持的输入类型
 
@@ -36,15 +36,18 @@
 - 当文件夹查询命中多个 plausible manuals，且无法安全收敛到唯一答案时，运行时会停止生成最终结论，并要求补充缩小范围的信息。
 - 当多个候选来源之间存在冲突时，运行时会展示 candidate evidence，而不是伪造一个单一确定答案。
 - 当问题具有 pin intent，但证据还不足以支持稳定 pin mapping 时，运行时会阻止它退化成 electrical-parameter 风格答案。
+- 对缺少 package 约束的 datasheet pin 问题，当前 guardrail 会保持 refusal，例如 `Which pin provides USART1_RX on STM32F103x8B?`
+- 对 `STM32F103C8` 这类 package / ordering sibling ambiguity，当前 guardrail 会保持 refusal，例如 `Which package does package code T correspond to for STM32F103C8?`
+- 对 revision-conflict 场景，当前会显式暴露冲突，而不是压成单值；`PD0` / `PD1` 会保留 `Rev 17` vs `Rev 20` disagreement。
 - 对上述保守回退路径，当前约束是“不误导、不伪装成 confident structured hit”，而不是“强行给出尽量像答案的句子”。
 
 ## 当前已验证的稳定点
 
 - `register`：参考手册正向路径已固定回归，例如 `Which register enables SPI DMA?`
 - `electrical_parameter`：数据手册正向路径已固定回归，例如 `VDD operating voltage range`
-- `pin`：当前稳定正向路径是 reference manual `Table 54`，而不是 datasheet package wording
+- `pin`：当前已固定的正向路径包括 reference manual `Table 54`，以及一个 datasheet package-constrained sample：`STM32F103x8B` 的 `LQFP48 USART1_TX -> PA9`
 
-这意味着 README 不应把当前能力表述成“全面支持所有芯片、所有 pin 场景”。目前更准确的说法是：寄存器、电气参数，以及一条已验证的 RM `Table 54` pin 正向路径已经落地；更广泛的 pin/package 场景仍保持保守处理。
+这意味着 README 不应把当前能力表述成“全面支持所有芯片、所有 pin/package 场景”。目前更准确的说法是：寄存器、电气参数、RM `Table 54` pin 正向路径，以及一个受约束的 datasheet `LQFP48 USART1_TX -> PA9` sample 已经落地；更广泛的 pin/package/ordering sibling 场景仍保持保守处理。
 
 ## 安装
 
@@ -63,21 +66,35 @@ npx skills add yinan-yinan/embedded-manual-lookup --skill embedded-lookup
 ### 运行依赖
 
 - Python 3.10+
-- 可选依赖：`pypdf`（用于解析 PDF）
+- 可选 PDF 依赖：
+  - `pypdf`（默认 PDF backend）
+  - `pdfplumber`（可选实验 backend）
 
-如果需要支持 PDF：
+如果需要支持默认 PDF 路径：
 
 ```bash
 python -m pip install pypdf
 ```
 
+如果需要尝试 `pdfplumber` backend：
+
+```bash
+python -m pip install pdfplumber
+```
+
 在部分 Windows 环境中，也可以使用：
 
 ```bash
-py -m pip install pypdf
+py -m pip install pypdf pdfplumber
 ```
 
 如果你只查询 `.txt`、`.md` 或 `.rst` 手册，则不需要额外依赖。
+
+当前 backend 结论：
+
+- 默认值仍是 `pypdf`，这也是当前推荐口径。
+- `pdfplumber` 仍保留为可选 backend，适合显式对比或定位失败模式；它不是当前建议切换的默认值。
+- 在 `STM32F103` revision-conflict focused fixture 上，`pdfplumber` 当前会漏掉第二个 conflict source，因此 `PD0` / `PD1` 的 `Rev 17` vs `Rev 20` disagreement 不能像 `pypdf` 一样稳定暴露。
 
 ## 使用方式
 
@@ -99,6 +116,19 @@ python ./scripts/embedded_lookup.py --help
 python ./scripts/embedded_lookup.py <手册路径或问题> [问题] [--device <器件>] [--document-type <类型>] [--revision <版本>] [--json]
 ```
 
+如果要切换 PDF backend，可以显式传入：
+
+```bash
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which ball is PD0?" --pdf-backend pdfplumber --json
+```
+
+也可以用环境变量全局覆盖默认值：
+
+```bash
+$env:EMBEDDED_LOOKUP_PDF_BACKEND="pdfplumber"
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which ball is PD0?" --json
+```
+
 示例：
 
 ```bash
@@ -118,13 +148,13 @@ python ./scripts/embedded_lookup.py "E:/path/to/reference-manual.pdf" "Which pin
 当前固定回归入口是：
 
 ```bash
-python ./.trellis/scripts/embedded_lookup_fixed_regression.py
+python ../.trellis/scripts/embedded_lookup_fixed_regression.py
 ```
 
 默认只跑 `baseline-blocking`。如果需要把 datasheet package probes 一起带上，可以显式启用 extended tier：
 
 ```bash
-python ./.trellis/scripts/embedded_lookup_fixed_regression.py --include-extended
+python ../.trellis/scripts/embedded_lookup_fixed_regression.py --include-extended
 ```
 
 默认 blocking baseline 当前包括：
@@ -137,7 +167,18 @@ python ./.trellis/scripts/embedded_lookup_fixed_regression.py --include-extended
 - RM `Table 54` `USART1_TX` positive
 - RM `Table 54` `USART1_RX` positive
 
-`extended-conservative` 当前用于 datasheet `LQFP48 package` 这类 probe，只做保守性检查，不改变默认 blocking verdict。
+默认 blocking baseline 之外，当前还额外固化了几类已完成的回归点：
+
+- datasheet package-constrained sample：`LQFP48 USART1_TX` 的答案冻结为 `PA9`，不应再回退成 `PA9 / PA9`
+- missing-package refusal guardrail：`USART1_RX` sibling 会继续要求补充 package / variant，而不是伪装成 pin 正答
+- package-code refusal guardrail：`STM32F103C8 package code T` 仍是保守拒答边界，不应误读成正向 package 能力
+- revision-conflict rerun：`PD0` / `PD1` 会继续显式保留 `Rev 17` vs `Rev 20` disagreement
+
+这些额外 lane 当前通过 opt-in 参数启用，例如：
+
+```bash
+python ../.trellis/scripts/embedded_lookup_fixed_regression.py --include-phase1-table-aware --include-phase2-feature-ordering --include-phase2-stm32f103-revision-conflict-rerun
+```
 
 ## 工作流程
 

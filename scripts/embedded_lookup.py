@@ -19,9 +19,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,8 +31,16 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     PdfReader = None
 
+try:
+    import pdfplumber  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    pdfplumber = None
+
 SUPPORTED_TEXT_SUFFIXES = {".txt", ".md", ".rst"}
 SUPPORTED_SUFFIXES = SUPPORTED_TEXT_SUFFIXES | {".pdf"}
+DEFAULT_PDF_BACKEND = "pypdf"
+PDF_BACKEND_ENV_VAR = "EMBEDDED_LOOKUP_PDF_BACKEND"
+SUPPORTED_PDF_BACKENDS = (DEFAULT_PDF_BACKEND, "pdfplumber")
 DOCUMENT_TYPE_HINTS = {
     "datasheet": "datasheet",
     "reference-manual": "reference manual",
@@ -77,7 +86,7 @@ GENERIC_REVISION_VALUES = {"version", "revision", "rev", "ver"}
 PIN_NAME_RE = re.compile(r"\bP[A-Z]\d{1,2}\b")
 SIGNAL_NAME_RE = re.compile(r"\b[A-Z]{2,}[A-Z0-9]*(?:_[A-Z0-9]+)+\b")
 PACKAGE_NAME_RE = re.compile(
-    r"\b(?:LQFP|TQFP|UFBGA|BGA|QFN|UFQFPN|WLCSP|SOIC|DIP)[- ]?\d+\b|\b\d{2,3}-pin\b",
+    r"\b(?:LQFP|TQFP|LFBGA|UFBGA|BGA|QFN|UFQFPN|WLCSP|SOIC|DIP)[- ]?\d+\b|\b\d{2,3}-pin\b",
     re.IGNORECASE,
 )
 REGISTER_FIELD_RE = re.compile(
@@ -511,6 +520,7 @@ class EmbeddedRetrievalPrototype:
         self,
         source: str | Path | None,
         *,
+        pdf_backend: str | None = None,
         filters: QueryFilters | None = None,
         max_documents: int = 3,
         max_sections: int = 5,
@@ -519,6 +529,7 @@ class EmbeddedRetrievalPrototype:
         chunk_overlap: int = 150,
     ) -> None:
         self.source = self._resolve_source(source)
+        self.pdf_backend = self._resolve_pdf_backend(pdf_backend)
         self.filters = filters or QueryFilters()
         self.max_documents = max_documents
         self.max_sections = max_sections
@@ -541,7 +552,10 @@ class EmbeddedRetrievalPrototype:
                 key_evidence=[],
                 sources=[],
                 open_questions=[
-                    "Provide a supported local text manual or install `pypdf` for text-based PDF extraction.",
+                    (
+                        "Provide a supported local text manual or install optional PDF backend "
+                        f"dependency `{self._pdf_backend_dependency_name()}` for `{self.pdf_backend}` extraction."
+                    ),
                 ],
                 searched_documents=[],
             )
@@ -569,14 +583,34 @@ class EmbeddedRetrievalPrototype:
             return self._discover_default_source()
         return Path(source)
 
+    def _resolve_pdf_backend(self, pdf_backend: str | None) -> str:
+        raw_value = pdf_backend or os.environ.get(PDF_BACKEND_ENV_VAR, DEFAULT_PDF_BACKEND)
+        normalized = raw_value.strip().lower()
+        if normalized not in SUPPORTED_PDF_BACKENDS:
+            allowed = ", ".join(SUPPORTED_PDF_BACKENDS)
+            raise UnsupportedInputError(
+                f"Unsupported PDF backend `{raw_value}`. Choose one of: {allowed}."
+            )
+        return normalized
+
+    def _pdf_backend_dependency_name(self, backend: str | None = None) -> str:
+        selected_backend = backend or self.pdf_backend
+        if selected_backend == "pdfplumber":
+            return "pdfplumber"
+        return "pypdf"
+
     def _discover_and_load_documents(self) -> list[DocumentRecord]:
         paths = self._discover_document_paths()
         documents: list[DocumentRecord] = []
+        last_error: UnsupportedInputError | None = None
         for path in paths:
             try:
                 documents.append(self._load_document(path))
-            except UnsupportedInputError:
+            except UnsupportedInputError as error:
+                last_error = error
                 continue
+        if not documents and last_error is not None:
+            raise last_error
         return documents
 
     def _discover_document_paths(self) -> list[Path]:
@@ -631,6 +665,11 @@ class EmbeddedRetrievalPrototype:
         return [PageText(page_number=1, text=text)]
 
     def _load_pdf_document(self, path: Path) -> list[PageText]:
+        if self.pdf_backend == "pdfplumber":
+            return self._load_pdf_document_with_pdfplumber(path)
+        return self._load_pdf_document_with_pypdf(path)
+
+    def _load_pdf_document_with_pypdf(self, path: Path) -> list[PageText]:
         if PdfReader is None:
             raise UnsupportedInputError(
                 f"PDF support requires optional dependency `pypdf`: {path}"
@@ -641,6 +680,20 @@ class EmbeddedRetrievalPrototype:
         for index, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
             pages.append(PageText(page_number=index, text=text))
+        return pages
+
+    def _load_pdf_document_with_pdfplumber(self, path: Path) -> list[PageText]:
+        if pdfplumber is None:
+            raise UnsupportedInputError(
+                "PDF backend `pdfplumber` requires optional dependency `pdfplumber`: "
+                f"{path}. Install `pdfplumber` or switch back to `pypdf`."
+            )
+
+        pages: list[PageText] = []
+        with pdfplumber.open(str(path)) as pdf:
+            for index, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text() or ""
+                pages.append(PageText(page_number=index, text=text))
         return pages
 
     def _extract_metadata(self, path: Path, full_text: str) -> dict[str, str | None]:
@@ -1552,6 +1605,11 @@ class EmbeddedRetrievalPrototype:
                     if is_pin_query and (
                         self._pin_table_section_bonus(question, heading_text, intent_window) >= 4.5
                         or self._source_has_requested_pin_mapping(question, intent_window)
+                        or (
+                            table_question_family == TABLE_QUESTION_PIN
+                            and PACKAGE_NAME_RE.search(question) is not None
+                            and self._extract_pin_mapping_values(question, section.text) is not None
+                        )
                     ):
                         pin_relevant_section_ids.add(section.id)
                     hits.append(ScoredItem(score=score, item=section))
@@ -1700,10 +1758,16 @@ class EmbeddedRetrievalPrototype:
         body_window_limit, _ = self._section_score_windows(table_question_family)
         body_text = section.text[:body_window_limit]
         if table_question_family == TABLE_QUESTION_PIN:
-            return (
+            current_score = (
                 self._pin_table_section_bonus(question, heading_text, body_text)
                 + self._table_section_noise_penalty(table_question_family, heading_text, body_text)
-            ) >= 4.5
+            )
+            if current_score >= 4.5:
+                return True
+            return (
+                PACKAGE_NAME_RE.search(question) is not None
+                and self._extract_pin_mapping_values(question, section.text) is not None
+            )
         if table_question_family == TABLE_QUESTION_ELECTRICAL:
             return (
                 self._electrical_table_section_bonus(question, heading_text, body_text)
@@ -3741,6 +3805,10 @@ class EmbeddedRetrievalPrototype:
             failure_hints.append(
                 "The retrieved pin row did not preserve the requested signal/function token."
             )
+        if self._extract_pin_mapping_values(question, source_text) is None:
+            failure_hints.append(
+                "The retrieved pin row did not preserve one grounded pin/ball mapping value."
+            )
 
         package_match = PACKAGE_NAME_RE.search(question)
         requested_package = package_match.group(0).upper() if package_match else None
@@ -4927,12 +4995,66 @@ class EmbeddedRetrievalPrototype:
         if not competing_paths:
             return False
 
+        def should_defer_to_pin_conflict(entries: list[EvidenceRecord]) -> bool:
+            if not self._is_pin_intent_query(question):
+                return False
+            if PACKAGE_NAME_RE.search(question) is None:
+                return False
+            top_family = top_entry.device_family
+            if not top_entry.document_path or not top_entry.revision or not top_family:
+                return False
+            if self._pin_constraint_failure_hints(question, top_entry):
+                return False
+
+            requested_family_tokens = {
+                self._compact_alnum(token)
+                for token in self._question_device_tokens(question)
+                if self._compact_alnum(token)
+            }
+            for range_match in re.finditer(
+                r"\b(STM32[A-Z0-9]{4,})X([A-Z0-9])\s*/\s*X([A-Z0-9])\b",
+                question.upper(),
+            ):
+                family_stem, first_density_code, second_density_code = range_match.groups()
+                requested_family_tokens.add(f"{family_stem}X{first_density_code}")
+                requested_family_tokens.add(f"{family_stem}X{second_density_code}")
+
+            def is_question_compatible_family(family: str | None) -> bool:
+                if not family:
+                    return False
+                compact_family = self._compact_alnum(family)
+                if not compact_family:
+                    return False
+                if not requested_family_tokens:
+                    return compact_family == self._compact_alnum(top_family)
+                return any(
+                    alias in requested_family_tokens
+                    for alias in self._restricted_device_token_aliases(compact_family)
+                )
+
+            if not is_question_compatible_family(top_family):
+                return False
+
+            for entry in entries:
+                if not entry.document_path or entry.document_path == top_entry.document_path:
+                    continue
+                if not entry.revision or entry.revision == top_entry.revision:
+                    continue
+                if not is_question_compatible_family(entry.device_family):
+                    continue
+                if self._pin_constraint_failure_hints(question, entry):
+                    continue
+                return True
+            return False
+
         top_score = top_entry.score
         close_competitors = [
             entry
             for entry in evidence[1:3]
             if entry.document_path != top_entry.document_path and entry.score >= top_score - 1.0
         ]
+        if close_competitors and should_defer_to_pin_conflict(close_competitors):
+            return False
         if close_competitors:
             return True
 
@@ -4940,7 +5062,12 @@ class EmbeddedRetrievalPrototype:
             (document.device_family or "", document.revision or "", document.title)
             for document in documents
         }
-        return len(unique_document_families) > 1 and not self._evidence_directly_answers(question, top_entry)
+        top_is_direct_answer = self._evidence_directly_answers(question, top_entry)
+        if len(unique_document_families) > 1 and not top_is_direct_answer:
+            if should_defer_to_pin_conflict(evidence[1:3]):
+                return False
+            return True
+        return False
 
     def _build_ambiguous_result(
         self,
@@ -4982,9 +5109,10 @@ class EmbeddedRetrievalPrototype:
     def _should_gate_on_conflict(self, question: str, documents: list[DocumentRecord], evidence: list[EvidenceRecord]) -> bool:
         if not self.source.is_dir() or len(documents) <= 1 or len(evidence) <= 1:
             return False
-        if not self._looks_numeric(question):
+        is_pin_intent_query = self._is_pin_intent_query(question)
+        if not self._looks_numeric(question) and not is_pin_intent_query:
             return False
-        if self._is_pin_intent_query(question) and not self._has_supported_pin_mapping_answer(question, evidence):
+        if is_pin_intent_query and not self._has_supported_pin_mapping_answer(question, evidence):
             return True
 
         top_entry = evidence[0]
@@ -4995,21 +5123,22 @@ class EmbeddedRetrievalPrototype:
         ) is not None
         if top_has_numeric_answer and top_missing_tokens:
             return True
-        if self._is_pin_intent_query(question) and top_missing_tokens:
+        if is_pin_intent_query and top_missing_tokens:
             return True
 
-        if self._is_pin_intent_query(question):
+        if is_pin_intent_query:
             pin_value_buckets = {}
             for entry in evidence[:4]:
-                raw_values = self._extract_pin_mapping_values(entry)
+                source_text = entry.full_text if entry.full_text else entry.excerpt
+                raw_value = self._extract_pin_mapping_values(question, source_text)
+                if raw_value is None:
+                    continue
+
                 normalized_values = set()
-                for raw_value in raw_values:
-                    if raw_value is None:
-                        continue
-                    for part in str(raw_value).split("/"):
-                        token = part.strip().upper()
-                        if token:
-                            normalized_values.add(token)
+                for part in str(raw_value).split("/"):
+                    token = part.strip().upper()
+                    if token:
+                        normalized_values.add(token)
                 if not normalized_values:
                     continue
 
@@ -5040,14 +5169,75 @@ class EmbeddedRetrievalPrototype:
         }
         return len(distinct_documents) > 1
 
+    def _best_pin_section_evidence_for_document(
+        self,
+        question: str,
+        document: DocumentRecord,
+        section_hits: list[ScoredItem],
+    ) -> EvidenceRecord | None:
+        best_entry: EvidenceRecord | None = None
+        best_failure_count = sys.maxsize
+
+        for hit in section_hits:
+            section: SectionRecord = hit.item
+            if self._extract_pin_mapping_values(question, section.text) is None:
+                continue
+
+            entry = EvidenceRecord(
+                tag="[S1]",
+                document_id=document.id,
+                document=document.title,
+                device_family=document.device_family,
+                revision=document.revision,
+                section=self._normalize_evidence_section(
+                    question,
+                    " > ".join(section.heading_path),
+                    section.text,
+                ),
+                page=self._format_page_range(section.page_start, section.page_end),
+                excerpt=self._build_pin_section_fallback_excerpt(
+                    question,
+                    section.text,
+                    limit=420,
+                ),
+                full_text=section.text,
+                score=round(hit.score, 2),
+                document_path=document.path,
+            )
+            failure_hints = self._pin_constraint_failure_hints(question, entry)
+            if not failure_hints:
+                return entry
+            if len(failure_hints) < best_failure_count:
+                best_entry = entry
+                best_failure_count = len(failure_hints)
+
+        return best_entry
+
     def _best_evidence_for_document(self, question: str, document: DocumentRecord) -> EvidenceRecord | None:
         section_hits = self._score_sections([document], question)
         chunk_hits = self._score_chunks(section_hits, question)
         evidence = self._build_evidence(chunk_hits, question)
-        if not evidence:
+        if self._table_question_family(question) == TABLE_QUESTION_PIN or self._is_pin_intent_query(question):
+            if evidence:
+                selected_entry, _ = self._select_pin_constraint_satisfied_evidence(question, evidence)
+                if selected_entry is not None:
+                    best_entry = selected_entry
+                else:
+                    best_entry = self._best_pin_section_evidence_for_document(
+                        question,
+                        document,
+                        section_hits,
+                    )
+            else:
+                best_entry = self._best_pin_section_evidence_for_document(
+                    question,
+                    document,
+                    section_hits,
+                )
+        else:
+            best_entry = evidence[0] if evidence else None
+        if best_entry is None:
             return None
-
-        best_entry = evidence[0]
         best_entry.document = document.title
         best_entry.device_family = document.device_family
         best_entry.revision = document.revision
@@ -5062,13 +5252,43 @@ class EmbeddedRetrievalPrototype:
     ) -> list[EvidenceRecord]:
         candidates: list[EvidenceRecord] = []
         seen_paths: set[str] = set()
+        table_question_family = self._table_question_family(question)
+        is_pin_conflict_query = (
+            table_question_family == TABLE_QUESTION_PIN
+            or self._is_pin_intent_query(question)
+        )
+        requested_pin_set = {candidate.upper() for candidate in PIN_NAME_RE.findall(question)}
+
+        def extract_nontrivial_pin_value(entry: EvidenceRecord) -> str | None:
+            source_text = entry.full_text if entry.full_text else entry.excerpt
+            raw_value = self._extract_pin_mapping_values(question, source_text)
+            if raw_value is None:
+                return None
+            normalized_value = re.sub(r"\s*/\s*", "/", raw_value.strip().upper())
+            if normalized_value == "-":
+                return normalized_value
+            value_tokens = [token.strip() for token in normalized_value.split("/") if token.strip()]
+            if value_tokens and all(token in requested_pin_set for token in value_tokens):
+                return None
+            return normalized_value
 
         for document in documents:
-            best_entry = self._best_evidence_for_document(question, document)
-            if best_entry is None or best_entry.document_path in seen_paths:
+            selected_entry: EvidenceRecord | None = None
+            if is_pin_conflict_query:
+                for entry in fallback_evidence:
+                    if entry.document_path != document.path:
+                        continue
+                    if extract_nontrivial_pin_value(entry) is not None:
+                        selected_entry = entry
+                        break
+
+            if selected_entry is None:
+                selected_entry = self._best_evidence_for_document(question, document)
+
+            if selected_entry is None or selected_entry.document_path in seen_paths:
                 continue
-            seen_paths.add(best_entry.document_path)
-            candidates.append(best_entry)
+            seen_paths.add(selected_entry.document_path)
+            candidates.append(selected_entry)
 
         if not candidates:
             for entry in fallback_evidence:
@@ -5079,13 +5299,21 @@ class EmbeddedRetrievalPrototype:
                 if len(candidates) >= 3:
                     break
 
-        candidates.sort(
-            key=lambda entry: (
-                self._extract_numeric_answer(question, entry.full_text if entry.full_text else entry.excerpt) is not None,
+        def candidate_sort_key(entry: EvidenceRecord) -> tuple[bool, bool, bool, float]:
+            source_text = entry.full_text if entry.full_text else entry.excerpt
+            pin_value_present = False
+            pin_constraints_satisfied = False
+            if is_pin_conflict_query:
+                pin_value_present = self._extract_pin_mapping_values(question, source_text) is not None
+                pin_constraints_satisfied = not self._pin_constraint_failure_hints(question, entry)
+            return (
+                pin_constraints_satisfied,
+                pin_value_present,
+                self._extract_numeric_answer(question, source_text) is not None,
                 entry.score,
-            ),
-            reverse=True,
-        )
+            )
+
+        candidates.sort(key=candidate_sort_key, reverse=True)
         candidates = candidates[:3]
         for index, entry in enumerate(candidates, start=1):
             entry.tag = f"[S{index}]"
@@ -5100,10 +5328,22 @@ class EmbeddedRetrievalPrototype:
     ) -> RetrievalResult:
         relevant_evidence = self._collect_conflict_candidates(question, documents, evidence)
         document_lookup = {document.path: document for document in documents}
+        table_question_family = self._table_question_family(question)
+        is_pin_table_conflict = (
+            table_question_family == TABLE_QUESTION_PIN
+            or self._is_pin_intent_query(question)
+        )
+        if is_pin_table_conflict:
+            relevant_evidence = self._normalize_pin_conflict_evidence_sections(relevant_evidence)
+        requested_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+        requested_pin = requested_pins[0] if requested_pins else "the requested pin"
 
         candidate_labels: list[str] = []
         key_evidence: list[str] = []
         numeric_candidates: list[tuple[str, str]] = []
+        pin_candidates: list[tuple[str, str]] = []
+        pin_candidate_summaries: list[tuple[str, str]] = []
+        candidate_rows: list[tuple[EvidenceRecord, str, str, str | None]] = []
 
         for entry in relevant_evidence:
             document = document_lookup.get(entry.document_path)
@@ -5114,35 +5354,70 @@ class EmbeddedRetrievalPrototype:
                 label += f" rev {entry.revision}"
             candidate_labels.append(label)
 
-            numeric_answer = self._extract_numeric_answer(
-                question,
-                entry.full_text if entry.full_text else entry.excerpt,
-            )
-            missing_tokens = self._missing_requirement_tokens(question, [entry])
-            if numeric_answer:
-                numeric_candidates.append((label, numeric_answer))
-                if missing_tokens:
+            source_text = entry.full_text if entry.full_text else entry.excerpt
+            pin_value: str | None = None
+            if is_pin_table_conflict:
+                raw_pin_value = self._extract_pin_mapping_values(question, source_text)
+                if raw_pin_value is not None:
+                    pin_value = re.sub(r"\s*/\s*", "/", raw_pin_value.strip().upper())
+                    pin_candidates.append((label, pin_value))
+                    summary_label = f"Rev {entry.revision}" if entry.revision else label
+                    pin_candidate_summaries.append((summary_label, pin_value))
+
+            candidate_rows.append((entry, label, source_text, pin_value))
+
+        if is_pin_table_conflict and pin_candidates:
+            for entry, label, _source_text, pin_value in candidate_rows:
+                if pin_value is not None:
                     key_evidence.append(
-                        f"{entry.tag} {label}: suggests {numeric_answer} from {entry.section} (page {entry.page}), but it still misses query terms like {', '.join(missing_tokens[:3])}."
+                        f"{entry.tag} {label}: shows {requested_pin} as {pin_value} in {entry.section} (page {entry.page})."
                     )
                 else:
                     key_evidence.append(
-                        f"{entry.tag} {label}: suggests {numeric_answer} from {entry.section} (page {entry.page})."
+                        f"{entry.tag} {label}: the best matching section was {entry.section} (page {entry.page}), but it did not yield a direct grounded pin mapping for {requested_pin}."
                     )
-            else:
-                key_evidence.append(
-                    f"{entry.tag} {label}: the best matching section was {entry.section} (page {entry.page}), but it did not yield a direct grounded numeric answer."
-                )
 
-        distinct_numeric_answers = {answer for _, answer in numeric_candidates}
-        if len(distinct_numeric_answers) > 1:
-            short_answer = "Different source candidates suggest different numeric answers, so I can't choose one grounded value yet."
-        elif numeric_candidates:
-            short_answer = (
-                "One candidate source surfaces a numeric-looking value, but the other candidate sources do not support a single grounded answer yet."
-            )
+            distinct_pin_answers = {answer for _, answer in pin_candidates}
+            if len(distinct_pin_answers) > 1:
+                pin_conflict_summary = "; ".join(
+                    f"{label} shows {answer}"
+                    for label, answer in pin_candidate_summaries[:3]
+                )
+                short_answer = (
+                    f"Different source candidates disagree on the pin mapping for {requested_pin}: {pin_conflict_summary}."
+                )
+            else:
+                short_answer = (
+                    "One candidate source surfaces a pin mapping, but the other candidate sources do not support a single grounded pin answer yet."
+                )
         else:
-            short_answer = "The current folder results point to different candidate sources, but none of them supports one grounded numeric answer yet."
+            for entry, label, source_text, _pin_value in candidate_rows:
+                numeric_answer = self._extract_numeric_answer(question, source_text)
+                missing_tokens = self._missing_requirement_tokens(question, [entry])
+                if numeric_answer:
+                    numeric_candidates.append((label, numeric_answer))
+                    if missing_tokens:
+                        key_evidence.append(
+                            f"{entry.tag} {label}: suggests {numeric_answer} from {entry.section} (page {entry.page}), but it still misses query terms like {', '.join(missing_tokens[:3])}."
+                        )
+                    else:
+                        key_evidence.append(
+                            f"{entry.tag} {label}: suggests {numeric_answer} from {entry.section} (page {entry.page})."
+                        )
+                else:
+                    key_evidence.append(
+                        f"{entry.tag} {label}: the best matching section was {entry.section} (page {entry.page}), but it did not yield a direct grounded numeric answer."
+                    )
+
+            distinct_numeric_answers = {answer for _, answer in numeric_candidates}
+            if len(distinct_numeric_answers) > 1:
+                short_answer = "Different source candidates suggest different numeric answers, so I can't choose one grounded value yet."
+            elif numeric_candidates:
+                short_answer = (
+                    "One candidate source surfaces a numeric-looking value, but the other candidate sources do not support a single grounded answer yet."
+                )
+            else:
+                short_answer = "The current folder results point to different candidate sources, but none of them supports one grounded numeric answer yet."
 
         open_questions = [
             "Potentially conflicting or misleading evidence was found across the selected folder sources, so the prototype is surfacing candidate evidence instead of collapsing to one answer.",
@@ -5163,6 +5438,82 @@ class EmbeddedRetrievalPrototype:
             open_questions=open_questions,
             searched_documents=searched_documents,
         )
+
+    def _normalize_pin_conflict_evidence_sections(
+        self,
+        evidence: list[EvidenceRecord],
+    ) -> list[EvidenceRecord]:
+        normalized_entries: list[EvidenceRecord] = []
+        for entry in evidence:
+            normalized_section = self._normalize_pin_conflict_section_label(entry)
+            if normalized_section == entry.section:
+                normalized_entries.append(entry)
+                continue
+            normalized_entries.append(replace(entry, section=normalized_section))
+        return normalized_entries
+
+    def _normalize_pin_conflict_section_label(self, entry: EvidenceRecord) -> str:
+        section = self._normalize_search_text(entry.section)
+        if not self._is_suspicious_pin_conflict_section_label(section):
+            return section or entry.section
+
+        for candidate in (
+            self._extract_pin_table_section_caption(entry.full_text),
+            self._extract_pin_table_section_caption(entry.excerpt),
+        ):
+            if candidate:
+                return candidate
+        return "Pin definitions table"
+
+    def _is_suspicious_pin_conflict_section_label(self, section: str) -> bool:
+        if not section:
+            return True
+
+        lowered_section = section.lower()
+        if any(term in lowered_section for term in PIN_TABLE_HEADING_TERMS):
+            return False
+        if len(section) == 1 and not section.isascii():
+            return True
+        if re.fullmatch(r"[^\x00-\x7F]+", section):
+            return True
+
+        has_inline_pin_label = (
+            PIN_NAME_RE.search(section.upper()) is not None
+            and any(separator in section for separator in ("-", "/", "_"))
+            and " " not in section
+        )
+        has_inline_signal_label = (
+            SIGNAL_NAME_RE.search(section.upper()) is not None
+            and any(separator in section for separator in ("-", "/", "_"))
+            and " " not in section
+        )
+        return has_inline_pin_label or has_inline_signal_label
+
+    def _extract_pin_table_section_caption(self, text: str) -> str | None:
+        if not text:
+            return None
+
+        compact_text = re.sub(r"[\x00-\x1F\x7F]+", " ", text)
+        compact_text = self._normalize_search_text(compact_text)
+        if not compact_text:
+            return None
+
+        table_caption_match = re.search(
+            r"\bTable\s+\d+[\.:]?\s*[^.]{0,200}?\bpin definitions(?:\s*\(continued\))?",
+            compact_text,
+            flags=re.IGNORECASE,
+        )
+        if table_caption_match:
+            return table_caption_match.group(0).strip(" .;:")
+
+        excerpt_caption_match = re.search(
+            r"\bPin definitions table\b(?:\s+for\s+[A-Z0-9/-]+)?",
+            compact_text,
+            flags=re.IGNORECASE,
+        )
+        if excerpt_caption_match:
+            return excerpt_caption_match.group(0).strip(" .;:")
+        return None
 
     def _is_low_signal_for_question(self, question: str, entry: EvidenceRecord) -> bool:
         lowered_question = question.lower()
@@ -5791,6 +6142,77 @@ class EmbeddedRetrievalPrototype:
 
         return self._squash_excerpt(compact, limit=limit)
 
+    def _build_pin_section_fallback_excerpt(self, question: str, text: str, limit: int = 420) -> str:
+        requested_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+        requested_pin = requested_pins[0] if requested_pins else "the requested pin"
+        package_match = PACKAGE_NAME_RE.search(question)
+        requested_package = package_match.group(0).upper() if package_match else None
+        pin_value = self._extract_pin_mapping_values(question, text)
+        row_excerpt = self._extract_pin_section_row_excerpt(question, text)
+        package_clause = f" for {requested_package}" if requested_package else ""
+
+        if pin_value is not None:
+            summary = f"Pin definitions table{package_clause} shows {requested_pin} as {pin_value}."
+            if row_excerpt:
+                summary += f" Nearby row: {row_excerpt}"
+            return self._squash_excerpt(summary, limit=limit)
+
+        excerpt = self._extract_relevant_excerpt(text, question, limit=limit)
+        excerpt = self._clean_pin_section_excerpt_text(excerpt)
+        if row_excerpt and requested_pin not in excerpt.upper():
+            summary = f"Pin definitions table{package_clause} references {requested_pin}. Nearby row: {row_excerpt}"
+            return self._squash_excerpt(summary, limit=limit)
+        return self._squash_excerpt(excerpt, limit=limit)
+
+    def _extract_pin_section_row_excerpt(self, question: str, text: str) -> str | None:
+        requested_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+        if not requested_pins:
+            return None
+
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+        if not normalized_lines:
+            return None
+
+        normalized_pin_value = self._extract_pin_mapping_values(question, text)
+        best_line: str | None = None
+        best_score = -1
+        for line in normalized_lines:
+            upper_line = line.upper()
+            if not any(re.search(rf"\b{re.escape(pin)}\b", upper_line) for pin in requested_pins):
+                continue
+
+            score = 0
+            token_count = len(line.split())
+            score += min(token_count, 8)
+            score += sum(upper_line.count(pin) * 2 for pin in requested_pins)
+            score += min(len(re.findall(r"\b[A-Z]\d{1,2}\b", upper_line)), 4)
+            if re.search(r"\bI\s*/\s*O\b|\bI/O\b", upper_line):
+                score += 2
+            if normalized_pin_value and normalized_pin_value != "-" and normalized_pin_value in upper_line:
+                score += 3
+            if token_count <= 2:
+                score -= 4
+            if "FIGURE" in upper_line or "PINOUT" in upper_line:
+                score -= 4
+
+            cleaned_line = self._clean_pin_section_excerpt_text(line)
+            if cleaned_line and score > best_score:
+                best_line = cleaned_line
+                best_score = score
+        return best_line
+
+    def _clean_pin_section_excerpt_text(self, value: str) -> str:
+        cleaned = re.sub(r"[\x00-\x1F\x7F]", " ", value)
+        cleaned = self._normalize_search_text(cleaned)
+        cleaned = re.sub(r"\s*\.\s*\.\s*\.\s*", "...", cleaned)
+        cleaned = re.sub(r"(?:[-=~_*#%]{2,}\s*)+$", "", cleaned)
+        cleaned = re.sub(r"\s+[.,;:]\s*$", "", cleaned)
+        return cleaned.strip()
+
 
     def _extract_register_answer(self, question: str, text: str) -> str | None:
         if not self._is_register_lookup_query(question):
@@ -6039,6 +6461,38 @@ class EmbeddedRetrievalPrototype:
         if not requested_pin_codes:
             return True
 
+        return any(
+            re.search(
+                rf"\b{re.escape(pin_code)}\s*=\s*{re.escape(requested_pin_count)}\s*PINS?\b",
+                upper_text,
+            )
+            for pin_code in requested_pin_codes
+        )
+
+    def _source_has_explicit_ball_package_scope(self, question: str, source_text: str) -> bool:
+        package_match = PACKAGE_NAME_RE.search(question)
+        if not package_match:
+            return False
+
+        requested_package = package_match.group(0).upper()
+        if self._source_matches_requested_package(requested_package, source_text):
+            return True
+
+        normalized_package = self._normalize_search_text(requested_package).upper().replace(" ", "")
+        family_pin_match = re.fullmatch(r"([A-Z]+)(\d+)", normalized_package)
+        if not family_pin_match:
+            return False
+
+        requested_pin_codes = {
+            pin_code
+            for pin_code, _ in self._requested_device_variant_codes(question)
+            if pin_code
+        }
+        if not requested_pin_codes:
+            return False
+
+        requested_pin_count = family_pin_match.group(2)
+        upper_text = self._normalize_search_text(source_text).upper()
         return any(
             re.search(
                 rf"\b{re.escape(pin_code)}\s*=\s*{re.escape(requested_pin_count)}\s*PINS?\b",
@@ -6321,6 +6775,8 @@ class EmbeddedRetrievalPrototype:
         direction_or_role = self._extract_pin_direction_or_role(source_text)
         if not pin_name or not signal_or_function:
             return None
+        if not self._is_row_local_pin_signal_or_function(question, source_text, signal_or_function):
+            return None
 
         return self._make_structured_summary(
             kind="pin",
@@ -6332,6 +6788,49 @@ class EmbeddedRetrievalPrototype:
                 ("Direction / Role", direction_or_role),
             ],
         )
+
+    def _is_row_local_pin_signal_or_function(
+        self,
+        question: str,
+        source_text: str,
+        signal_or_function: str,
+    ) -> bool:
+        requested_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+        question_has_explicit_signal = bool(
+            SIGNAL_NAME_RE.search(question) or re.search(r"\bAF\d+\b", question, flags=re.IGNORECASE)
+        )
+        if not requested_pins or question_has_explicit_signal:
+            return True
+
+        normalized_signal = signal_or_function.upper()
+        normalized_lines = [
+            self._normalize_search_text(line)
+            for line in source_text.splitlines()
+            if self._normalize_search_text(line)
+        ]
+
+        for index, line in enumerate(normalized_lines):
+            upper_line = line.upper()
+            line_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(line)]
+            if not any(pin in line_pins for pin in requested_pins):
+                continue
+            if normalized_signal in upper_line:
+                return True
+
+            for adjacent_index in (index - 1, index + 1):
+                if adjacent_index < 0 or adjacent_index >= len(normalized_lines):
+                    continue
+                adjacent_line = normalized_lines[adjacent_index]
+                if normalized_signal not in adjacent_line.upper():
+                    continue
+                if self._is_table_row_support_line(
+                    question,
+                    TABLE_QUESTION_PIN,
+                    adjacent_line.lower(),
+                ):
+                    return True
+
+        return False
 
     def _extract_pin_signal_or_function(self, question: str, source_text: str) -> str | None:
         source_upper = source_text.upper()
@@ -6629,6 +7128,30 @@ class EmbeddedRetrievalPrototype:
 
     def _extract_pin_mapping_values(self, question: str, source_text: str) -> str | None:
         requested_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(question)]
+        requested_pin_set = set(requested_pins)
+        is_ball_query = bool(re.search(r"\bball\b", question, flags=re.IGNORECASE))
+        has_explicit_package_constraint = PACKAGE_NAME_RE.search(question) is not None
+        has_explicit_ball_package_scope = (
+            has_explicit_package_constraint
+            and self._source_has_explicit_ball_package_scope(question, source_text)
+        )
+        allow_ball_nearest_left_fallback = not (
+            is_ball_query
+            and has_explicit_package_constraint
+            and (
+                self._source_has_multiple_package_options(source_text)
+                or not has_explicit_ball_package_scope
+            )
+        )
+
+        def is_self_mapping_value(candidate: str | None) -> bool:
+            if not candidate:
+                return False
+            normalized_candidate = re.sub(r"\s*/\s*", "/", candidate.strip().upper())
+            if normalized_candidate == "-":
+                return False
+            candidate_tokens = [token.strip() for token in normalized_candidate.split("/") if token.strip()]
+            return bool(candidate_tokens) and all(token in requested_pin_set for token in candidate_tokens)
 
         normalized_lines = [
             self._normalize_search_text(line)
@@ -6642,27 +7165,133 @@ class EmbeddedRetrievalPrototype:
             mapping_value_pattern = re.compile(
                 r"\b[A-Z]\d{1,2}\s*/\s*[A-Z]\d{1,2}\b|\b[A-Z]\d{1,2}\b|(?<![A-Z0-9_])-(?![A-Z0-9_])"
             )
+            requested_package = None
+            if has_explicit_package_constraint:
+                package_match = PACKAGE_NAME_RE.search(question)
+                if package_match:
+                    requested_package = package_match.group(0).upper()
+
+            def select_mapping_value(
+                raw_values: list[str],
+                *,
+                prefer_non_dash: bool = False,
+            ) -> str | None:
+                normalized_values = [
+                    re.sub(r"\s*/\s*", "/", raw_value.strip().upper())
+                    for raw_value in raw_values
+                    if raw_value and raw_value.strip()
+                ]
+                if prefer_non_dash:
+                    for normalized_value in reversed(normalized_values):
+                        if normalized_value == "-" or is_self_mapping_value(normalized_value):
+                            continue
+                        return normalized_value
+                for normalized_value in reversed(normalized_values):
+                    if is_self_mapping_value(normalized_value):
+                        continue
+                    return normalized_value
+                return None
+
+            def extract_header_anchored_ball_value(requested_pin: str) -> str | None:
+                if not (
+                    is_ball_query
+                    and requested_package
+                    and self._source_has_multiple_package_options(source_text)
+                ):
+                    return None
+
+                package_header_pattern = re.compile(
+                    r"\b(?:LQFP|UFQFPN|VFQFPN|TFBGA|LFBGA|UFBGA|UFBG|BGA)\s*\d+\b"
+                    r"(?:\s*/\s*\b(?:LQFP|UFQFPN|VFQFPN|TFBGA|LFBGA|UFBGA|UFBG|BGA)\s*\d+\b)*",
+                    re.IGNORECASE,
+                )
+                normalized_requested_package = requested_package.replace(" ", "")
+                pin_pattern = re.compile(rf"\b{re.escape(requested_pin)}\b")
+
+                def header_matches_requested_package(header_column: str) -> bool:
+                    return any(
+                        self._source_matches_requested_package(
+                            normalized_requested_package,
+                            package_option,
+                        )
+                        for package_option in header_column.split("/")
+                    )
+
+                for index, line in enumerate(normalized_lines):
+                    upper_line = line.upper()
+                    if not pin_pattern.search(upper_line):
+                        continue
+
+                    package_columns: list[str] = []
+                    for header_line in normalized_lines[max(0, index - 20) : index]:
+                        normalized_header_columns = [
+                            self._normalize_search_text(match.group(0)).upper().replace(" ", "")
+                            for match in package_header_pattern.finditer(header_line)
+                        ]
+                        for header_column in normalized_header_columns:
+                            if header_column not in package_columns:
+                                package_columns.append(header_column)
+                    if not package_columns:
+                        continue
+
+                    requested_package_index = next(
+                        (
+                            column_index
+                            for column_index, header_column in enumerate(package_columns)
+                            if header_matches_requested_package(header_column)
+                        ),
+                        None,
+                    )
+                    if requested_package_index is None:
+                        continue
+
+                    row_tokens = [token.upper() for token in upper_line.split()]
+                    if requested_pin not in row_tokens:
+                        continue
+                    pin_index = row_tokens.index(requested_pin)
+                    row_cells = row_tokens[: len(package_columns)]
+                    if pin_index < len(row_cells) or requested_package_index >= len(row_cells):
+                        continue
+
+                    normalized_candidate = re.sub(
+                        r"\s*/\s*",
+                        "/",
+                        row_cells[requested_package_index].strip().upper(),
+                    )
+                    if not re.fullmatch(r"[A-Z]\d{1,2}(?:/[A-Z]\d{1,2})?|-", normalized_candidate):
+                        continue
+                    if is_self_mapping_value(normalized_candidate):
+                        continue
+                    return normalized_candidate
+
+                return None
 
             for requested_pin in requested_pins:
                 if requested_pin in seen_requested_pins:
                     continue
                 seen_requested_pins.add(requested_pin)
 
-                matched_value: str | None = None
-                pin_pattern = re.compile(rf"\b{re.escape(requested_pin)}\b")
-                for line in normalized_lines:
-                    upper_line = line.upper()
-                    pin_match = pin_pattern.search(upper_line)
-                    if not pin_match:
-                        continue
+                matched_value: str | None = extract_header_anchored_ball_value(requested_pin)
+                if matched_value is None:
+                    pin_pattern = re.compile(rf"\b{re.escape(requested_pin)}\b")
+                    for line in normalized_lines:
+                        upper_line = line.upper()
+                        pin_match = pin_pattern.search(upper_line)
+                        if not pin_match:
+                            continue
 
-                    tail = upper_line[pin_match.end() :]
-                    tail_values = [match.group(0) for match in mapping_value_pattern.finditer(tail)]
-                    if not tail_values:
-                        continue
-
-                    matched_value = re.sub(r"\s*/\s*", "/", tail_values[-1].upper())
-                    break
+                        tail = upper_line[pin_match.end() :]
+                        tail_values = [match.group(0) for match in mapping_value_pattern.finditer(tail)]
+                        matched_value = select_mapping_value(tail_values)
+                        # Nearest-left ball fallback is unsafe for explicit-package queries when
+                        # the source row spans multiple package columns without aligned indices.
+                        if matched_value is None and is_ball_query and allow_ball_nearest_left_fallback:
+                            head = upper_line[: pin_match.start()]
+                            head_values = [match.group(0) for match in mapping_value_pattern.finditer(head)]
+                            matched_value = select_mapping_value(head_values, prefer_non_dash=True)
+                        if matched_value is None:
+                            continue
+                        break
 
                 if matched_value is not None:
                     requested_values.append(matched_value)
@@ -6685,7 +7314,9 @@ class EmbeddedRetrievalPrototype:
             if signal_or_function not in upper_line:
                 continue
 
-            line_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(line)]
+            line_pins = list(
+                dict.fromkeys(candidate.upper() for candidate in PIN_NAME_RE.findall(line))
+            )
             if not line_pins:
                 continue
 
@@ -6721,8 +7352,12 @@ class EmbeddedRetrievalPrototype:
                 )
 
         if len(row_pins) == 1:
-            return row_pins[0]
-        return " / ".join(row_pins)
+            fallback_value = row_pins[0]
+        else:
+            fallback_value = " / ".join(row_pins)
+        if is_self_mapping_value(fallback_value):
+            return None
+        return fallback_value
 
     def _build_pin_grounded_short_answer(
         self,
@@ -6734,6 +7369,8 @@ class EmbeddedRetrievalPrototype:
         pin_name = self._extract_pin_name(question, source_text)
         package_name = self._extract_package_name(question, source_text)
         if not signal_or_function:
+            return None
+        if not self._is_row_local_pin_signal_or_function(question, source_text, signal_or_function):
             return None
         if pin_name:
             package_clause = f" for {package_name}" if package_name else ""
@@ -6764,7 +7401,11 @@ class EmbeddedRetrievalPrototype:
                 f"in [S1] {entry.section} (page {entry.page})."
             )
 
-        row_pins = [candidate.upper() for candidate in PIN_NAME_RE.findall(normalized_lines[target_index])]
+        row_pins = list(
+            dict.fromkeys(
+                candidate.upper() for candidate in PIN_NAME_RE.findall(normalized_lines[target_index])
+            )
+        )
         if not row_pins:
             return None
 
@@ -7569,6 +8210,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", help="Optional device or family filter")
     parser.add_argument("--document-type", help="Optional document type filter")
     parser.add_argument("--revision", help="Optional revision filter")
+    parser.add_argument(
+        "--pdf-backend",
+        choices=SUPPORTED_PDF_BACKENDS,
+        help=(
+            "PDF text extraction backend. Defaults to `pypdf`, or use "
+            f"`{PDF_BACKEND_ENV_VAR}` to override globally."
+        ),
+    )
     parser.add_argument("--max-documents", type=int, default=3)
     parser.add_argument("--max-sections", type=int, default=5)
     parser.add_argument("--max-chunks", type=int, default=5)
@@ -7640,6 +8289,7 @@ def main() -> int:
 
     prototype = EmbeddedRetrievalPrototype(
         source,
+        pdf_backend=args.pdf_backend,
         filters=QueryFilters(
             device=args.device,
             document_type=args.document_type,

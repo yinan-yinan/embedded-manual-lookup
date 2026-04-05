@@ -12,8 +12,8 @@ This skill is for grounded lookup against local embedded manuals, datasheets, an
   - `structured_summary.kind = "register"`
   - `structured_summary.kind = "electrical_parameter"`
   - `structured_summary.kind = "pin"`
-- The currently stable positive pin path is the reference-manual `Table 54` lane. In the fixed regression entry, `USART1_TX` and `USART1_RX` on that lane are part of the baseline-blocking set.
-- Datasheet package-worded probes such as `LQFP48 package` are currently classified as `extended-conservative` in fixed regression. They are there to confirm conservative handling and prevent parameter-style drift; they are not the default blocking baseline.
+- The currently stable positive pin paths are still narrow: the reference-manual `Table 54` lane, plus one hardened datasheet package-constrained sample, `STM32F103x8B + LQFP48 + USART1_TX -> PA9`.
+- That does not mean datasheet pin/package handling is broadly stable. Outside those validated samples, wider datasheet pin/package wording should still be treated as a conservative boundary.
 
 ## Currently supported input types
 
@@ -36,15 +36,18 @@ This skill is for grounded lookup against local embedded manuals, datasheets, an
 - If a folder query matches multiple plausible manuals and the runtime cannot safely narrow to one answer, it stops and asks for a disambiguating detail.
 - If different candidate sources conflict, the runtime surfaces candidate evidence instead of inventing one final answer.
 - If a question has pin intent but the evidence is not strong enough for a stable pin mapping, the runtime prevents that path from degrading into an electrical-parameter style answer.
+- For datasheet pin queries that are missing a package constraint, the current guardrail stays in refusal mode, for example `Which pin provides USART1_RX on STM32F103x8B?`
+- For package / ordering sibling ambiguity such as `STM32F103C8`, the current guardrail also stays in refusal mode, for example `Which package does package code T correspond to for STM32F103C8?`
+- For revision-conflict cases, the runtime now keeps the disagreement explicit instead of collapsing it into one value; `PD0` and `PD1` preserve the `Rev 17` vs `Rev 20` disagreement.
 - The current contract on these fallback paths is conservative handling: do not mislead, and do not present an unsafe path as a confident structured hit.
 
 ## Currently validated stable paths
 
 - `register`: the positive reference-manual path is covered by fixed regression, for example `Which register enables SPI DMA?`
 - `electrical_parameter`: the positive datasheet path is covered by fixed regression, for example the `VDD operating voltage range`
-- `pin`: the current stable positive path is reference manual `Table 54`, not datasheet package wording
+- `pin`: the currently frozen positive paths include reference manual `Table 54`, plus one datasheet package-constrained sample, `STM32F103x8B` `LQFP48 USART1_TX -> PA9`
 
-That is why this README should not claim broad support for every chip or every pin scenario. The accurate statement today is narrower: register lookup, electrical-parameter lookup, and one validated RM `Table 54` pin-positive lane are implemented; broader pin/package cases still rely on conservative handling.
+That is why this README should not claim broad support for every chip or every pin/package scenario. The accurate statement today is narrower: register lookup, electrical-parameter lookup, the RM `Table 54` pin-positive lane, and one constrained datasheet `LQFP48 USART1_TX -> PA9` sample are implemented; broader pin/package/ordering sibling cases still rely on conservative handling.
 
 ## Installation
 
@@ -63,21 +66,35 @@ npx skills add yinan-yinan/embedded-manual-lookup --skill embedded-lookup
 ### Runtime requirements
 
 - Python 3.10+
-- Optional: `pypdf` for PDF parsing
+- Optional PDF dependencies:
+  - `pypdf` for the default PDF backend
+  - `pdfplumber` for the optional experiment backend
 
-If you need PDF support:
+If you need the default PDF path:
 
 ```bash
 python -m pip install pypdf
 ```
 
+If you want to try the `pdfplumber` backend:
+
+```bash
+python -m pip install pdfplumber
+```
+
 On some Windows environments, you can also use:
 
 ```bash
-py -m pip install pypdf
+py -m pip install pypdf pdfplumber
 ```
 
 If you only query `.txt`, `.md`, or `.rst` manuals, no extra package is required.
+
+Current backend conclusion:
+
+- `pypdf` remains the default and is still the recommended backend.
+- `pdfplumber` remains available as an optional backend for explicit comparison or failure-mode investigation; it is not the current candidate for switching the default.
+- On the focused `STM32F103` revision-conflict fixture, `pdfplumber` currently drops the second conflict source, so it does not preserve the `PD0` / `PD1` `Rev 17` vs `Rev 20` disagreement as reliably as `pypdf`.
 
 ## Usage
 
@@ -99,6 +116,19 @@ Basic usage:
 python ./scripts/embedded_lookup.py <source-or-question> [question] [--device <device>] [--document-type <type>] [--revision <rev>] [--json]
 ```
 
+To switch PDF backend explicitly:
+
+```bash
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which ball is PD0?" --pdf-backend pdfplumber --json
+```
+
+You can also override the default globally with an environment variable:
+
+```bash
+$env:EMBEDDED_LOOKUP_PDF_BACKEND="pdfplumber"
+python ./scripts/embedded_lookup.py "E:/path/to/manual.pdf" "Which ball is PD0?" --json
+```
+
 Examples:
 
 ```bash
@@ -118,13 +148,13 @@ python ./scripts/embedded_lookup.py "E:/path/to/reference-manual.pdf" "Which pin
 The current fixed regression entrypoint is:
 
 ```bash
-python ./.trellis/scripts/embedded_lookup_fixed_regression.py
+python ../.trellis/scripts/embedded_lookup_fixed_regression.py
 ```
 
 By default it runs only the `baseline-blocking` tier. To include the datasheet package probes as well, enable the extended tier explicitly:
 
 ```bash
-python ./.trellis/scripts/embedded_lookup_fixed_regression.py --include-extended
+python ../.trellis/scripts/embedded_lookup_fixed_regression.py --include-extended
 ```
 
 The current default blocking baseline includes:
@@ -137,7 +167,18 @@ The current default blocking baseline includes:
 - RM `Table 54` `USART1_TX` positive
 - RM `Table 54` `USART1_RX` positive
 
-`extended-conservative` is currently where the datasheet `LQFP48 package` probes live. Those probes are advisory conservative checks only and do not change the default blocking verdict.
+Outside the default blocking baseline, the project has also hardened several completed regression points:
+
+- Datasheet package-constrained sample: `LQFP48 USART1_TX` is now frozen to `PA9`, and should not regress to `PA9 / PA9`
+- Missing-package refusal guardrail: the `USART1_RX` sibling should continue to ask for a package / variant instead of pretending to have a safe pin answer
+- Package-code refusal guardrail: `STM32F103C8 package code T` remains a conservative refusal boundary, not a positive package capability
+- Revision-conflict rerun: `PD0` / `PD1` should continue to surface the `Rev 17` vs `Rev 20` disagreement explicitly
+
+Those extra lanes are currently enabled through opt-in flags such as:
+
+```bash
+python ../.trellis/scripts/embedded_lookup_fixed_regression.py --include-phase1-table-aware --include-phase2-feature-ordering --include-phase2-stm32f103-revision-conflict-rerun
+```
 
 ## Workflow
 
